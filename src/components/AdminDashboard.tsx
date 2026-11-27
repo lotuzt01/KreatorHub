@@ -25,6 +25,12 @@ import {
   formatIDR,
   formatPaymentMethodLabel,
 } from '../lib/format';
+import {
+  deleteStaticProduct,
+  getStaticAdminOverview,
+  saveStaticProduct,
+  updateStaticOrderStatus,
+} from '../lib/staticFallback';
 import { ProductEditorModal } from './ProductEditorModal';
 import { ThemeEditorPanel } from './ThemeEditorPanel';
 import { DeploySeoPanel, TelegramSettingsPanel } from './TelegramDeployPanels';
@@ -34,6 +40,7 @@ type AdminTab = 'orders' | 'products' | 'theme' | 'telegram' | 'deploy';
 
 interface AdminDashboardProps {
   adminToken: string;
+  isStaticMode?: boolean;
   isDark: boolean;
   onToggleTheme: () => void;
   onExitAdmin: () => void;
@@ -51,6 +58,7 @@ const TAB_ITEMS: Array<{ id: AdminTab; label: string; icon: typeof ShoppingCart 
 
 export function AdminDashboard({
   adminToken,
+  isStaticMode = false,
   isDark,
   onToggleTheme,
   onExitAdmin,
@@ -73,6 +81,13 @@ export function AdminDashboard({
   const [busyActionId, setBusyActionId] = useState<string | null>(null);
 
   const fetchOverview = useCallback(async () => {
+    if (isStaticMode) {
+      setOverview(getStaticAdminOverview());
+      setError(null);
+      setLoading(false);
+      return;
+    }
+
     try {
       const res = await fetch('/api/admin/overview', {
         headers: { Authorization: `Bearer ${adminToken}` },
@@ -90,7 +105,7 @@ export function AdminDashboard({
     } finally {
       setLoading(false);
     }
-  }, [adminToken, onLogout]);
+  }, [adminToken, isStaticMode, onLogout]);
 
   useEffect(() => {
     fetchOverview();
@@ -106,6 +121,11 @@ export function AdminDashboard({
     const nextStock = Math.max(0, product.stock + delta);
     setBusyActionId(product.id);
     try {
+      if (isStaticMode) {
+        saveStaticProduct(product.id, { stock: nextStock });
+        await handleRefreshAll();
+        return;
+      }
       const res = await fetch(`/api/admin/products/${encodeURIComponent(product.id)}`, {
         method: 'PUT',
         headers: {
@@ -125,6 +145,11 @@ export function AdminDashboard({
   const handleDeleteProduct = async (product: Product) => {
     setBusyActionId(product.id);
     try {
+      if (isStaticMode) {
+        deleteStaticProduct(product.id);
+        await handleRefreshAll();
+        return;
+      }
       const res = await fetch(`/api/admin/products/${encodeURIComponent(product.id)}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${adminToken}` },
@@ -140,6 +165,11 @@ export function AdminDashboard({
   const handleUpdateOrderStatus = async (order: Order, nextStatus: Order['status']) => {
     setBusyActionId(order.id);
     try {
+      if (isStaticMode) {
+        updateStaticOrderStatus(order.id, nextStatus);
+        await handleRefreshAll();
+        return;
+      }
       const res = await fetch(`/api/admin/orders/${encodeURIComponent(order.id)}/status`, {
         method: 'PATCH',
         headers: {
@@ -157,6 +187,7 @@ export function AdminDashboard({
   };
 
   const handleResendTelegram = async (order: Order) => {
+    if (isStaticMode) return;
     setBusyActionId(`tg-${order.id}`);
     try {
       const res = await fetch(
@@ -687,6 +718,7 @@ export function AdminDashboard({
                   theme={overview.settings.theme}
                   seo={overview.settings.seo}
                   adminToken={adminToken}
+                  isStaticMode={isStaticMode}
                   onSaved={handleRefreshAll}
                 />
               )}
@@ -698,6 +730,7 @@ export function AdminDashboard({
                   status={overview.telegramStatus}
                   logs={overview.telegramLogs}
                   adminToken={adminToken}
+                  isStaticMode={isStaticMode}
                   onUpdated={fetchOverview}
                 />
               )}
@@ -722,6 +755,7 @@ export function AdminDashboard({
           product={editingProduct}
           categories={overview.settings.categories}
           adminToken={adminToken}
+          isStaticMode={isStaticMode}
           onClose={() => {
             setEditorOpen(false);
             setEditingProduct(null);

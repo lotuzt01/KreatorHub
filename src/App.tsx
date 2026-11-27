@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { CartItem, Product, StorefrontPayload } from './types/store';
 import { darkenHex, getRadiusPx } from './lib/format';
+import { getStaticStorefrontPayload } from './lib/staticFallback';
 import { StorefrontHeader } from './components/StorefrontHeader';
 import { StorefrontView } from './components/StorefrontView';
 import { ProductDetailModal } from './components/ProductDetailModal';
@@ -49,12 +50,19 @@ export default function App() {
 
   // Admin session token strictly held in React memory (never localStorage)
   const [adminToken, setAdminToken] = useState<string | null>(null);
+  const [isStaticMode, setIsStaticMode] = useState<boolean>(false);
 
   const loadStorefront = useCallback(async () => {
     try {
-      const res = await fetch('/api/storefront');
-      if (!res.ok) throw new Error('Gagal memuat katalog');
+      const res = await fetch('/api/storefront', {
+        headers: { Accept: 'application/json' },
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        throw new Error('Static hosting detected');
+      }
       const data = (await res.json()) as StorefrontPayload;
+      setIsStaticMode(false);
       setStorefront(data);
 
       // Respect store default theme if visitor hasn't explicitly toggled light/dark
@@ -70,7 +78,21 @@ export default function App() {
         if (matched) setSelectedProduct(matched);
       }
     } catch {
-      // Keep previous storefront data if refresh fails temporarily
+      // Automatic fallback for purely static hosting (GitHub Pages / static Netlify / Vercel)
+      const fallback = getStaticStorefrontPayload();
+      setIsStaticMode(true);
+      setStorefront(fallback);
+
+      if (!userToggledTheme) {
+        setIsDark(fallback.settings.theme.defaultMode === 'dark');
+      }
+
+      const params = new URLSearchParams(window.location.search);
+      const slug = params.get('produk');
+      if (slug) {
+        const matched = fallback.products.find((p) => p.slug === slug);
+        if (matched) setSelectedProduct(matched);
+      }
     } finally {
       setLoading(false);
     }
@@ -224,6 +246,7 @@ export default function App() {
       return (
         <AdminAuthGate
           storeName={storefront?.settings.theme.storeName || 'Karsa Digital'}
+          isStaticMode={isStaticMode}
           onAuthenticated={(token) => setAdminToken(token)}
           onBackToStore={() => setRoute('storefront')}
         />
@@ -233,6 +256,7 @@ export default function App() {
     return (
       <AdminDashboard
         adminToken={adminToken}
+        isStaticMode={isStaticMode}
         isDark={isDark}
         onToggleTheme={handleToggleTheme}
         onExitAdmin={() => setRoute('storefront')}
@@ -293,6 +317,7 @@ export default function App() {
 
           <CartCheckoutDrawer
             open={cartOpen}
+            isStaticMode={isStaticMode}
             items={cart}
             products={storefront.products}
             onClose={() => setCartOpen(false)}

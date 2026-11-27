@@ -14,10 +14,16 @@ import {
 } from 'lucide-react';
 import type { CartItem, Order, PaymentMethod, Product } from '../types/store';
 import { formatIDR, formatPaymentMethodLabel } from '../lib/format';
+import {
+  confirmStaticOrderPayment,
+  createStaticOrder,
+  triggerStaticLicenseDownload,
+} from '../lib/staticFallback';
 import { SafeImage } from './SafeImage';
 
 interface CartCheckoutDrawerProps {
   open: boolean;
+  isStaticMode?: boolean;
   items: CartItem[];
   products: Product[];
   onClose: () => void;
@@ -39,6 +45,7 @@ const PAYMENT_OPTIONS: Array<{ id: PaymentMethod; title: string; subtitle: strin
 
 export function CartCheckoutDrawer({
   open,
+  isStaticMode = false,
   items,
   products,
   onClose,
@@ -95,6 +102,21 @@ export function CartCheckoutDrawer({
 
     setSubmitting(true);
     try {
+      if (isStaticMode) {
+        const order = createStaticOrder({
+          customerName: customerName.trim(),
+          customerEmail: customerEmail.trim(),
+          customerPhone: customerPhone.trim(),
+          paymentMethod,
+          items: resolvedCart.map((c) => ({ productId: c.productId, quantity: c.quantity })),
+        });
+        setActiveOrder(order);
+        onClearCart();
+        onOrderCompleted();
+        setStep('payment');
+        return;
+      }
+
       const res = await fetch('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -126,6 +148,14 @@ export function CartCheckoutDrawer({
     setError(null);
     setSubmitting(true);
     try {
+      if (isStaticMode) {
+        const paidOrder = confirmStaticOrderPayment(activeOrder.id);
+        setActiveOrder(paidOrder);
+        onOrderCompleted();
+        setStep('success');
+        return;
+      }
+
       const res = await fetch(`/api/orders/${encodeURIComponent(activeOrder.id)}/pay`, {
         method: 'POST',
       });
@@ -449,15 +479,27 @@ export function CartCheckoutDrawer({
                           {item.fileName}
                         </p>
                       </div>
-                      <a
-                        href={downloadHref}
-                        download={item.fileName}
-                        style={{ backgroundColor: 'var(--store-accent)' }}
-                        className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-3.5 text-xs font-semibold text-white transition-opacity hover:opacity-90 whitespace-nowrap"
-                      >
-                        <Download className="h-3.5 w-3.5" aria-hidden="true" />
-                        <span>Unduh</span>
-                      </a>
+                      {isStaticMode ? (
+                        <button
+                          type="button"
+                          onClick={() => triggerStaticLicenseDownload(activeOrder, item)}
+                          style={{ backgroundColor: 'var(--store-accent)' }}
+                          className="inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-3.5 text-xs font-semibold text-white transition-opacity hover:opacity-90 whitespace-nowrap"
+                        >
+                          <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>Unduh</span>
+                        </button>
+                      ) : (
+                        <a
+                          href={downloadHref}
+                          download={item.fileName}
+                          style={{ backgroundColor: 'var(--store-accent)' }}
+                          className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-3.5 text-xs font-semibold text-white transition-opacity hover:opacity-90 whitespace-nowrap"
+                        >
+                          <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>Unduh</span>
+                        </a>
+                      )}
                     </div>
                   );
                 })}

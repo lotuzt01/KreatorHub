@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Package } from 'lucide-react';
+import { resolveAssetUrl } from '../lib/format';
 
 interface SafeImageProps {
   src: string;
@@ -10,8 +11,9 @@ interface SafeImageProps {
 
 export function SafeImage({ src, alt, className = '', fallbackLabel }: SafeImageProps) {
   const [failed, setFailed] = useState(false);
+  const resolvedSrc = resolveAssetUrl(src);
 
-  if (!src || failed) {
+  if (!resolvedSrc || failed) {
     return (
       <div
         role="img"
@@ -28,7 +30,7 @@ export function SafeImage({ src, alt, className = '', fallbackLabel }: SafeImage
 
   return (
     <img
-      src={src}
+      src={resolvedSrc}
       alt={alt}
       referrerPolicy="no-referrer"
       onError={() => setFailed(true)}

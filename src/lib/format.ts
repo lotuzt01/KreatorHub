@@ -71,6 +71,21 @@ export function isSafeHttpOrLocalUrl(url: string): boolean {
   }
 }
 
+export function resolveAssetUrl(url: string): string {
+  const trimmed = url.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('/src/assets/') || trimmed.startsWith('/assets/')) {
+    const base = import.meta.env.BASE_URL || '/';
+    if (base === './') {
+      return `.${trimmed}`;
+    }
+    if (base !== '/' && base.endsWith('/')) {
+      return `${base}${trimmed.slice(1)}`;
+    }
+  }
+  return trimmed;
+}
+
 export const PRESET_ACCENT_COLORS = [
   { name: 'Biru Kobalt', value: '#1D4ED8' },
   { name: 'Zamrud Studio', value: '#047857' },

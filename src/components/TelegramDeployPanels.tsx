@@ -17,12 +17,14 @@ import type {
   TelegramPreferences,
 } from '../types/store';
 import { formatDateTimeID } from '../lib/format';
+import { saveStaticSettings } from '../lib/staticFallback';
 
 interface TelegramSettingsPanelProps {
   preferences: TelegramPreferences;
   status: TelegramConnectionStatus;
   logs: TelegramLog[];
   adminToken: string;
+  isStaticMode?: boolean;
   onUpdated: () => void;
 }
 
@@ -31,6 +33,7 @@ export function TelegramSettingsPanel({
   status,
   logs,
   adminToken,
+  isStaticMode = false,
   onUpdated,
 }: TelegramSettingsPanelProps) {
   const [draft, setDraft] = useState<TelegramPreferences>(preferences);
@@ -42,6 +45,15 @@ export function TelegramSettingsPanel({
     setSaving(true);
     setMessage(null);
     try {
+      if (isStaticMode) {
+        saveStaticSettings({ telegram: draft });
+        setMessage({
+          type: 'ok',
+          text: 'Preferensi disimpan secara lokal. Jalankan server Node.js untuk pengiriman Bot Telegram real-time.',
+        });
+        onUpdated();
+        return;
+      }
       const res = await fetch('/api/admin/settings', {
         method: 'PUT',
         headers: {
@@ -65,6 +77,13 @@ export function TelegramSettingsPanel({
   };
 
   const handleTestSend = async () => {
+    if (isStaticMode) {
+      setMessage({
+        type: 'err',
+        text: 'Mode statis GitHub Pages tidak menjalankan backend. Deploy ke server Node.js (Cloud Run/Railway/VPS) untuk menguji Bot Telegram.',
+      });
+      return;
+    }
     setTesting(true);
     setMessage(null);
     try {

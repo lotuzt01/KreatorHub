@@ -3,16 +3,18 @@ import { AlertCircle, ArrowLeft, Lock, ShieldCheck } from 'lucide-react';
 
 interface AdminAuthGateProps {
   storeName: string;
+  isStaticMode?: boolean;
   onAuthenticated: (token: string) => void;
   onBackToStore: () => void;
 }
 
 export function AdminAuthGate({
   storeName,
+  isStaticMode = false,
   onAuthenticated,
   onBackToStore,
 }: AdminAuthGateProps) {
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!isStaticMode);
   const [setupRequired, setSetupRequired] = useState(false);
   const [mode, setMode] = useState<'env' | 'claimed' | 'setup_required'>('claimed');
   const [password, setPassword] = useState('');
@@ -21,6 +23,10 @@ export function AdminAuthGate({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (isStaticMode) {
+      setLoading(false);
+      return;
+    }
     let active = true;
     fetch('/api/admin/auth/status')
       .then((res) => res.json())
@@ -39,7 +45,7 @@ export function AdminAuthGate({
     return () => {
       active = false;
     };
-  }, []);
+  }, [isStaticMode]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -109,7 +115,23 @@ export function AdminAuthGate({
           </div>
         </div>
 
-        {loading ? (
+        {isStaticMode ? (
+          <div className="mt-6 space-y-4">
+            <p className="text-xs leading-relaxed text-slate-600 dark:text-zinc-300">
+              Situs ini sedang berjalan di hosting statis (seperti GitHub Pages). Anda tetap dapat
+              menguji pengelolaan produk, stok, tema, dan SEO secara lokal di browser lalu mengekspor
+              hasilnya ke JSON.
+            </p>
+            <button
+              type="button"
+              onClick={() => onAuthenticated('static-local-session')}
+              style={{ backgroundColor: 'var(--store-accent)' }}
+              className="h-10 w-full cursor-pointer rounded-lg text-sm font-semibold text-white transition-opacity hover:opacity-90"
+            >
+              Buka Dasbor Mode Statis (Lokal Browser)
+            </button>
+          </div>
+        ) : loading ? (
           <div className="mt-6 space-y-3">
             <div className="h-10 animate-pulse rounded-lg bg-slate-100 dark:bg-zinc-800" />
             <div className="h-10 animate-pulse rounded-lg bg-slate-100 dark:bg-zinc-800" />

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { AlertCircle, Check, FileUp, Image as ImageIcon, Plus, Trash2, X } from 'lucide-react';
 import type { Product } from '../types/store';
 import { PRESET_PRODUCT_COVERS } from '../lib/format';
+import { saveStaticProduct } from '../lib/staticFallback';
 import { SafeImage } from './SafeImage';
 
 interface ProductEditorModalProps {
@@ -9,6 +10,7 @@ interface ProductEditorModalProps {
   product: Product | null;
   categories: string[];
   adminToken: string;
+  isStaticMode?: boolean;
   onClose: () => void;
   onSaved: () => void;
 }
@@ -18,6 +20,7 @@ export function ProductEditorModal({
   product,
   categories,
   adminToken,
+  isStaticMode = false,
   onClose,
   onSaved,
 }: ProductEditorModalProps) {
@@ -58,6 +61,17 @@ export function ProductEditorModal({
   if (!open) return null;
 
   const handleUpload = async (file: File, kind: 'product' | 'cover') => {
+    if (isStaticMode) {
+      if (kind === 'product') {
+        setFileKey(`static-${Date.now()}`);
+        setFileName(file.name);
+        setFileSize(`${Math.max(1, Math.round(file.size / 1024))} KB`);
+      } else {
+        setError('Unggah gambar kustom memerlukan server Node.js. Pilih salah satu sampul studio di bawah pada mode statis.');
+      }
+      return;
+    }
+
     setError(null);
     if (kind === 'product') setUploadingFile(true);
     else setUploadingCover(true);
@@ -116,6 +130,33 @@ export function ProductEditorModal({
 
     setSaving(true);
     try {
+      const payload = {
+        title: title.trim(),
+        slug: slug.trim() || undefined,
+        category: finalCategory,
+        price: numericPrice,
+        originalPrice: originalPrice ? Number(originalPrice) : undefined,
+        unlimitedStock,
+        stock: unlimitedStock ? -1 : Math.max(0, Number(stock || 0)),
+        format: format.trim() || 'Digital File',
+        shortDescription: shortDescription.trim(),
+        description: description.trim(),
+        highlights: highlights.map((h) => h.trim()).filter(Boolean),
+        coverImage,
+        fileKey,
+        fileName,
+        fileSize,
+        status,
+        featured,
+      };
+
+      if (isStaticMode) {
+        saveStaticProduct(isEditing ? product!.id : null, payload);
+        onSaved();
+        onClose();
+        return;
+      }
+
       const endpoint = isEditing
         ? `/api/admin/products/${encodeURIComponent(product!.id)}`
         : '/api/admin/products';
@@ -127,25 +168,7 @@ export function ProductEditorModal({
           'Content-Type': 'application/json',
           Authorization: `Bearer ${adminToken}`,
         },
-        body: JSON.stringify({
-          title: title.trim(),
-          slug: slug.trim() || undefined,
-          category: finalCategory,
-          price: numericPrice,
-          originalPrice: originalPrice ? Number(originalPrice) : undefined,
-          unlimitedStock,
-          stock: unlimitedStock ? -1 : Math.max(0, Number(stock || 0)),
-          format: format.trim() || 'Digital File',
-          shortDescription: shortDescription.trim(),
-          description: description.trim(),
-          highlights: highlights.map((h) => h.trim()).filter(Boolean),
-          coverImage,
-          fileKey,
-          fileName,
-          fileSize,
-          status,
-          featured,
-        }),
+        body: JSON.stringify(payload),
       });
       const data = (await res.json()) as { error?: string };
       if (!res.ok) {

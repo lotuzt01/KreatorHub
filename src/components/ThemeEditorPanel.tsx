@@ -2,12 +2,14 @@ import { useState } from 'react';
 import { Check, RotateCcw, Save } from 'lucide-react';
 import type { CornerStyle, SeoConfig, ThemeConfig } from '../types/store';
 import { PRESET_ACCENT_COLORS, PRESET_PRODUCT_COVERS, getRadiusPx } from '../lib/format';
+import { saveStaticSettings } from '../lib/staticFallback';
 import { SafeImage } from './SafeImage';
 
 interface ThemeEditorPanelProps {
   theme: ThemeConfig;
   seo: SeoConfig;
   adminToken: string;
+  isStaticMode?: boolean;
   onSaved: () => void;
 }
 
@@ -15,6 +17,7 @@ export function ThemeEditorPanel({
   theme,
   seo,
   adminToken,
+  isStaticMode = false,
   onSaved,
 }: ThemeEditorPanelProps) {
   const [draftTheme, setDraftTheme] = useState<ThemeConfig>(theme);
@@ -29,6 +32,12 @@ export function ThemeEditorPanel({
     setError(null);
     setFeedback(null);
     try {
+      if (isStaticMode) {
+        saveStaticSettings({ theme: draftTheme, seo: draftSeo });
+        setFeedback('Tampilan dan metadata SEO disimpan secara lokal di browser.');
+        onSaved();
+        return;
+      }
       const res = await fetch('/api/admin/settings', {
         method: 'PUT',
         headers: {
@@ -56,6 +65,14 @@ export function ThemeEditorPanel({
     setError(null);
     setFeedback(null);
     try {
+      if (isStaticMode) {
+        const next = saveStaticSettings({ resetTheme: true });
+        setDraftTheme(next.theme);
+        setDraftSeo(next.seo);
+        setFeedback('Tema dikembalikan ke pengaturan standar.');
+        onSaved();
+        return;
+      }
       const res = await fetch('/api/admin/settings', {
         method: 'PUT',
         headers: {

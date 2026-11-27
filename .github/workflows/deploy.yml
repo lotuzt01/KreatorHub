@@ -26,9 +26,15 @@ jobs:
           node-version: "22"
           cache: "npm"
       - name: Instal dependensi
-        run: npm ci
-      - name: Build produksi
+        run: npm install
+      - name: Build produksi untuk GitHub Pages
+        env:
+          VITE_BASE_PATH: "./"
         run: npm run build
+      - name: Siapkan fallback SPA & .nojekyll
+        run: |
+          touch dist/.nojekyll
+          cp dist/index.html dist/404.html
       - name: Unggah artefak GitHub Pages
         uses: actions/upload-pages-artifact@v3
         with:
