@@ -28,6 +28,7 @@ import {
   dispatchTelegramNotification,
   getTelegramConnectionStatus,
   notifyLowStockIfNeeded,
+  syncOrderFromTelegram,
 } from './server/telegram.js';
 
 const PORT = 3000;
@@ -54,6 +55,8 @@ const ALLOWED_PRODUCT_EXTENSIONS = new Set([
 const ALLOWED_COVER_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
 
 const VALID_PAYMENT_METHODS = new Set<PaymentMethod>([
+  'telegram_bank',
+  'bank_transfer',
   'qris',
   'va_bca',
   'va_mandiri',
@@ -117,7 +120,9 @@ function buildAdminOverview(): AdminOverviewPayload {
   const db = loadDatabase();
   const threshold = db.settings.telegram.lowStockThreshold ?? 5;
   const paidOrders = db.orders.filter((o) => o.status === 'PAID');
-  const pendingOrders = db.orders.filter((o) => o.status === 'PENDING');
+  const pendingOrders = db.orders.filter(
+    (o) => o.status === 'PENDING' || o.status === 'AWAITING_BANK' || o.status === 'PAYMENT_SUBMITTED',
+  );
   const activeProducts = db.products.filter((p) => p.status === 'active');
   const lowStockProducts = activeProducts.filter(
     (p) => !p.unlimitedStock && p.stock <= threshold,
@@ -339,7 +344,7 @@ async function startServer() {
       paymentReference,
       items: resolvedItems,
       totalAmount,
-      status: 'PENDING',
+      status: paymentMethod === 'telegram_bank' ? 'AWAITING_BANK' : 'PENDING',
       downloadToken: crypto.randomBytes(24).toString('hex'),
       telegramStatus: 'pending',
       createdAt: new Date().toISOString(),
@@ -348,7 +353,7 @@ async function startServer() {
     db.orders.unshift(order);
     saveDatabase(db);
 
-    if (db.settings.telegram.notifyOnOrderCreated) {
+    if (db.settings.telegram.notifyOnOrderCreated || paymentMethod === 'telegram_bank') {
       const msg = buildOrderTelegramMessage(order, db.settings, 'created');
       const result = await dispatchTelegramNotification({
         event: 'order_created',
@@ -357,6 +362,9 @@ async function startServer() {
       });
       order.telegramStatus = result.status;
       order.telegramMessage = result.detail;
+      if (result.messageId) {
+        order.telegramOrderMessageId = result.messageId;
+      }
       saveDatabase(db);
     }
 
@@ -364,11 +372,83 @@ async function startServer() {
       await notifyLowStockIfNeeded(product);
     }
 
-    // Never expose downloadToken while status is PENDING
+    // Never expose downloadToken while status is not PAID
     res.status(201).json({
       order: {
         ...order,
         downloadToken: '',
+      },
+    });
+  });
+
+  // PUBLIC: Poll live order status & sync admin bank/confirmation replies from Telegram
+  app.get('/api/orders/:id/status', async (req, res) => {
+    const db = loadDatabase();
+    const order = db.orders.find((o) => o.id === req.params.id);
+    if (!order) {
+      res.status(404).json({ error: 'Pesanan tidak ditemukan.' });
+      return;
+    }
+
+    const prevStatus = order.status;
+    const changed = await syncOrderFromTelegram(order, db.settings);
+    if (changed) {
+      if (prevStatus !== 'PAID' && order.status === 'PAID') {
+        for (const item of order.items) {
+          const prod = db.products.find((p) => p.id === item.productId);
+          if (prod) prod.salesCount += item.quantity;
+        }
+      }
+      saveDatabase(db);
+    }
+
+    const tgStatus = getTelegramConnectionStatus(db.settings);
+    res.json({
+      telegramConfigured: tgStatus.botTokenConfigured && Boolean(tgStatus.effectiveChatIdMasked),
+      order: {
+        ...order,
+        downloadToken: order.status === 'PAID' ? order.downloadToken : '',
+      },
+    });
+  });
+
+  // PUBLIC: Buyer marks that they have transferred to the bank account sent by admin via Telegram
+  app.post('/api/orders/:id/submit-transfer', async (req, res) => {
+    const db = loadDatabase();
+    const order = db.orders.find((o) => o.id === req.params.id);
+    if (!order) {
+      res.status(404).json({ error: 'Pesanan tidak ditemukan.' });
+      return;
+    }
+    if (order.status === 'CANCELLED') {
+      res.status(409).json({ error: 'Pesanan ini telah dibatalkan.' });
+      return;
+    }
+    if (order.status === 'AWAITING_BANK') {
+      res.status(409).json({ error: 'Menunggu admin mengirim detail rekening bank melalui Telegram terlebih dahulu.' });
+      return;
+    }
+
+    if (order.status === 'PENDING') {
+      order.status = 'PAYMENT_SUBMITTED';
+      const msg = buildOrderTelegramMessage(order, db.settings, 'transfer_submitted');
+      const result = await dispatchTelegramNotification({
+        event: 'transfer_submitted',
+        text: msg,
+        orderId: order.id,
+      });
+      order.telegramStatus = result.status;
+      order.telegramMessage = result.detail;
+      if (result.messageId) {
+        order.telegramTransferMessageId = result.messageId;
+      }
+      saveDatabase(db);
+    }
+
+    res.json({
+      order: {
+        ...order,
+        downloadToken: order.status === 'PAID' ? order.downloadToken : '',
       },
     });
   });
@@ -384,6 +464,18 @@ async function startServer() {
 
     if (order.status === 'CANCELLED') {
       res.status(409).json({ error: 'Pesanan ini telah dibatalkan.' });
+      return;
+    }
+
+    const tgStatus = getTelegramConnectionStatus(db.settings);
+    if (
+      order.paymentMethod === 'telegram_bank' &&
+      tgStatus.botTokenConfigured &&
+      Boolean(tgStatus.effectiveChatIdMasked)
+    ) {
+      res.status(403).json({
+        error: 'Pesanan ini menunggu konfirmasi LUNAS dari admin melalui Telegram.',
+      });
       return;
     }
 
@@ -527,6 +619,55 @@ async function startServer() {
   // ADMIN: Dashboard overview
   app.get('/api/admin/overview', requireAdmin, (_req, res) => {
     res.json(buildAdminOverview());
+  });
+
+  // ADMIN: Manually supply bank details for an awaiting order (backup to Telegram reply)
+  app.post('/api/admin/orders/:id/bank-details', requireAdmin, (req, res) => {
+    const db = loadDatabase();
+    const order = db.orders.find((o) => o.id === req.params.id);
+    if (!order) {
+      res.status(404).json({ error: 'Pesanan tidak ditemukan.' });
+      return;
+    }
+    const bankName = String(req.body?.bankName || '').trim().slice(0, 60);
+    const accountNumber = String(req.body?.accountNumber || '').replace(/[\s-]/g, '').slice(0, 30);
+    const accountHolder = String(req.body?.accountHolder || '').trim().slice(0, 80);
+    const amount = Math.round(Number(req.body?.amount || order.totalAmount));
+
+    if (bankName.length < 2 || !/^\d{5,26}$/.test(accountNumber) || !Number.isFinite(amount) || amount < 100) {
+      res.status(400).json({ error: 'Nama bank, nomor rekening (minimal 5 digit), dan nominal wajib diisi dengan benar.' });
+      return;
+    }
+
+    order.adminBankName = bankName;
+    order.adminBankNumber = accountNumber;
+    order.adminBankHolder = accountHolder;
+    order.adminTransferAmount = amount;
+    if (order.status === 'AWAITING_BANK') {
+      order.status = 'PENDING';
+    }
+    saveDatabase(db);
+    res.json({ order });
+  });
+
+  // ADMIN: Manually confirm order as PAID (backup to Telegram LUNAS reply)
+  app.post('/api/admin/orders/:id/confirm-paid', requireAdmin, (req, res) => {
+    const db = loadDatabase();
+    const order = db.orders.find((o) => o.id === req.params.id);
+    if (!order) {
+      res.status(404).json({ error: 'Pesanan tidak ditemukan.' });
+      return;
+    }
+    if (order.status !== 'PAID') {
+      order.status = 'PAID';
+      order.paidAt = new Date().toISOString();
+      for (const item of order.items) {
+        const prod = db.products.find((p) => p.id === item.productId);
+        if (prod) prod.salesCount += item.quantity;
+      }
+      saveDatabase(db);
+    }
+    res.json({ order });
   });
 
   // ADMIN: Upload digital product file or product cover image

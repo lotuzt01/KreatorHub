@@ -1,8 +1,20 @@
-export type PaymentMethod = 'qris' | 'va_bca' | 'va_mandiri' | 'ewallet_gopay' | 'ewallet_dana';
+export type PaymentMethod =
+  | 'telegram_bank'
+  | 'bank_transfer'
+  | 'qris'
+  | 'va_bca'
+  | 'va_mandiri'
+  | 'ewallet_gopay'
+  | 'ewallet_dana';
 
 export type PaymentGatewayProvider = 'builtin_auto' | 'midtrans' | 'tripay' | 'xendit';
 
-export type OrderStatus = 'PENDING' | 'PAID' | 'CANCELLED';
+export type OrderStatus =
+  | 'AWAITING_BANK'
+  | 'PENDING'
+  | 'PAYMENT_SUBMITTED'
+  | 'PAID'
+  | 'CANCELLED';
 
 export type CornerStyle = 'sharp' | 'modern' | 'soft';
 
@@ -77,6 +89,12 @@ export interface Order {
   downloadToken: string;
   telegramStatus: 'sent' | 'not_configured' | 'failed' | 'pending';
   telegramMessage?: string;
+  telegramOrderMessageId?: number;
+  telegramTransferMessageId?: number;
+  adminBankName?: string;
+  adminBankNumber?: string;
+  adminBankHolder?: string;
+  adminTransferAmount?: number;
   createdAt: string;
   paidAt?: string;
 }
@@ -116,7 +134,7 @@ export interface TelegramPreferences {
 export interface TelegramLog {
   id: string;
   timestamp: string;
-  event: 'order_created' | 'order_paid' | 'low_stock' | 'test';
+  event: 'order_created' | 'transfer_submitted' | 'order_paid' | 'low_stock' | 'test';
   orderId?: string;
   status: 'sent' | 'not_configured' | 'failed';
   detail: string;

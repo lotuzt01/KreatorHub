@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AlertCircle, Check, CreditCard, Save } from 'lucide-react';
+import { AlertCircle, Check, Save } from 'lucide-react';
 import type {
   PaymentGatewayProvider,
   PaymentGatewayStatus,
@@ -281,18 +281,50 @@ export function PaymentSettingsPanel({
         </div>
 
         {/* Right: Payment Methods Toggle & Account Numbers */}
-        <div className="lg:col-span-7">
+        <div className="space-y-5 lg:col-span-7">
           <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="font-display text-sm font-bold text-slate-900 dark:text-zinc-100">
                   Kanal Pembayaran Aktif
                 </h3>
                 <p className="mt-0.5 text-xs text-slate-500 dark:text-zinc-400">
-                  Aktifkan atau nonaktifkan kanal serta sesuaikan nomor VA / e-wallet penerima.
+                  Aktifkan atau nonaktifkan kanal serta sesuaikan nomor rekening / VA penerima.
                 </p>
               </div>
-              <CreditCard className="h-4 w-4 text-slate-400" aria-hidden="true" />
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      methods: prev.methods.map((m) => ({
+                        ...m,
+                        enabled: m.id === 'telegram_bank',
+                      })),
+                    }))
+                  }
+                  style={{ backgroundColor: 'var(--store-accent)' }}
+                  className="h-8 cursor-pointer rounded-lg px-3 text-xs font-semibold text-white hover:opacity-90 whitespace-nowrap"
+                >
+                  Konfirmasi Telegram Saja
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      methods: prev.methods.map((m) => ({
+                        ...m,
+                        enabled: m.id === 'bank_transfer',
+                      })),
+                    }))
+                  }
+                  className="h-8 cursor-pointer rounded-lg border border-slate-300 bg-slate-50 px-3 text-xs font-semibold text-slate-800 hover:bg-slate-100 whitespace-nowrap dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
+                >
+                  Rekening Tetap Saja
+                </button>
+              </div>
             </div>
 
             <div className="mt-4 divide-y divide-slate-200 border-t border-slate-200 dark:divide-zinc-800 dark:border-zinc-800">
@@ -315,11 +347,46 @@ export function PaymentSettingsPanel({
                     </span>
                   </div>
 
-                  {method.enabled && (
+                  {method.enabled && method.id === 'telegram_bank' && (
+                    <div className="ml-6 rounded-lg border border-blue-200 bg-blue-50/60 p-3 text-xs leading-relaxed text-slate-700 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-zinc-300">
+                      <p className="font-semibold text-slate-900 dark:text-zinc-100">
+                        Cara membalas pesanan di Telegram:
+                      </p>
+                      <p className="mt-1">
+                        Saat pembeli checkout, bot akan mengirim pesan pesanan ke Telegram Anda. Cukup{' '}
+                        <strong>Reply (Balas)</strong> pesan tersebut dengan format:
+                      </p>
+                      <p className="mt-1.5 rounded border border-blue-200 bg-white px-2.5 py-1.5 font-mono text-[11px] text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100">
+                        BCA | 1234567890 | 129123
+                      </p>
+                      <p className="mt-1.5 text-[11px] text-slate-500 dark:text-zinc-400">
+                        Data Nama Bank, Nomor Rekening, dan Nominal langsung tampil otomatis di layar pembeli.
+                        Setelah pembeli transfer dan Anda cek mutasi, balas <strong>LUNAS</strong> untuk membuka
+                        link unduhan produk.
+                      </p>
+                    </div>
+                  )}
+
+                  {method.enabled && method.id !== 'telegram_bank' && (
                     <div className="grid gap-3 pl-6 sm:grid-cols-2">
+                      {method.id === 'bank_transfer' && (
+                        <div className="sm:col-span-2">
+                          <label className="block text-[11px] font-medium text-slate-500 dark:text-zinc-400">
+                            Nama Bank (Contoh: Transfer Bank BRI / BCA / SeaBank)
+                          </label>
+                          <input
+                            type="text"
+                            value={method.label}
+                            onChange={(e) => updateMethod(method.id, { label: e.target.value })}
+                            className="mt-1 h-8 w-full rounded-lg border border-slate-300 bg-white px-2.5 text-xs text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                          />
+                        </div>
+                      )}
                       <div>
                         <label className="block text-[11px] font-medium text-slate-500 dark:text-zinc-400">
-                          Nomor VA / Rekening / NMID
+                          {method.id === 'bank_transfer'
+                            ? 'Nomor Rekening Bank'
+                            : 'Nomor VA / Rekening / NMID'}
                         </label>
                         <input
                           type="text"
@@ -347,6 +414,20 @@ export function PaymentSettingsPanel({
                   )}
                 </div>
               ))}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-5 text-xs leading-relaxed text-slate-600 dark:border-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-300">
+            <p className="font-display text-sm font-bold text-slate-900 dark:text-zinc-100">
+              Syarat Wajib Konfirmasi 2-Arah Telegram di Vercel
+            </p>
+            <p className="mt-1">
+              Pastikan 2 variabel Bot Telegram berikut sudah terpasang di{' '}
+              <strong>Vercel → Settings → Environment Variables</strong> (lalu klik <strong>Redeploy</strong>):
+            </p>
+            <div className="mt-3 space-y-1.5 rounded-lg border border-slate-200 bg-white p-3 font-mono text-[11px] text-slate-800 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200">
+              <p>TELEGRAM_BOT_TOKEN = Token dari @BotFather</p>
+              <p>TELEGRAM_CHAT_ID = ID Telegram Anda (dari @userinfobot)</p>
             </div>
           </div>
         </div>

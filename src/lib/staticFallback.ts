@@ -19,6 +19,13 @@ interface StaticStoreDatabase {
 
 const STORAGE_KEY = 'karsa_digital_static_store_v1';
 
+export interface VercelBankConfig {
+  bankName: string;
+  accountNumber: string;
+  accountHolder: string;
+  bankOnlyMode: boolean;
+}
+
 export function getDefaultStaticPaymentSettings(): PaymentSettings {
   return {
     provider: 'builtin_auto',
@@ -29,10 +36,26 @@ export function getDefaultStaticPaymentSettings(): PaymentSettings {
     autoConfirmDemo: true,
     methods: [
       {
+        id: 'telegram_bank',
+        label: 'Transfer Bank via Konfirmasi Telegram',
+        description: 'Admin akan mengirim Nama Bank, Nomor Rekening, & Nominal langsung dari Telegram ke layar ini',
+        enabled: true,
+        accountNumber: '',
+        accountHolder: '',
+      },
+      {
+        id: 'bank_transfer',
+        label: 'Transfer Rekening Bank (Tetap)',
+        description: 'Transfer langsung ke nomor rekening tetap pemilik toko',
+        enabled: false,
+        accountNumber: '1234567890',
+        accountHolder: 'Nama Pemilik Rekening',
+      },
+      {
         id: 'qris',
         label: 'QRIS Otomatis',
         description: 'Verifikasi instan semua e-wallet & m-banking Indonesia',
-        enabled: true,
+        enabled: false,
         accountNumber: 'ID1026384920192',
         accountHolder: 'Karsa Digital Studio',
       },
@@ -40,7 +63,7 @@ export function getDefaultStaticPaymentSettings(): PaymentSettings {
         id: 'va_bca',
         label: 'Virtual Account BCA',
         description: 'Konfirmasi otomatis tanpa unggah bukti transfer',
-        enabled: true,
+        enabled: false,
         accountNumber: '8801081290441120',
         accountHolder: 'PT Karsa Digital Nusantara',
       },
@@ -48,7 +71,7 @@ export function getDefaultStaticPaymentSettings(): PaymentSettings {
         id: 'va_mandiri',
         label: 'Virtual Account Mandiri',
         description: 'Nomor VA unik untuk pesanan ini',
-        enabled: true,
+        enabled: false,
         accountNumber: '8950808129044112',
         accountHolder: 'PT Karsa Digital Nusantara',
       },
@@ -56,7 +79,7 @@ export function getDefaultStaticPaymentSettings(): PaymentSettings {
         id: 'ewallet_gopay',
         label: 'GoPay Instan',
         description: 'Pembayaran langsung dari aplikasi Gojek',
-        enabled: true,
+        enabled: false,
         accountNumber: '081290441120',
         accountHolder: 'Karsa Digital',
       },
@@ -64,7 +87,7 @@ export function getDefaultStaticPaymentSettings(): PaymentSettings {
         id: 'ewallet_dana',
         label: 'DANA Instan',
         description: 'Bebas biaya administrasi tambahan',
-        enabled: true,
+        enabled: false,
         accountNumber: '081290441120',
         accountHolder: 'Karsa Digital',
       },
@@ -288,7 +311,12 @@ export function loadStaticDb(): StaticStoreDatabase {
           methods:
             Array.isArray(parsed.settings?.payment?.methods) &&
             parsed.settings.payment.methods.length > 0
-              ? parsed.settings.payment.methods
+              ? parsed.settings.payment.methods.some((m) => m.id === 'telegram_bank')
+                ? parsed.settings.payment.methods
+                : [
+                    defaults.settings.payment.methods[0],
+                    ...parsed.settings.payment.methods.map((m) => ({ ...m, enabled: false })),
+                  ]
               : defaults.settings.payment.methods,
         },
         categories:
@@ -311,7 +339,35 @@ export function saveStaticDb(db: StaticStoreDatabase): void {
   }
 }
 
-export function getStaticStorefrontPayload(): StorefrontPayload {
+export function applyVercelBankConfig(
+  payment: PaymentSettings,
+  bankConfig?: VercelBankConfig | null,
+): PaymentSettings {
+  if (!bankConfig || !bankConfig.accountNumber) return payment;
+  const label = bankConfig.bankName.toLowerCase().includes('bank')
+    ? bankConfig.bankName
+    : `Transfer Bank ${bankConfig.bankName}`;
+  return {
+    ...payment,
+    merchantName: bankConfig.accountHolder || payment.merchantName,
+    methods: payment.methods.map((m) => {
+      if (m.id === 'bank_transfer') {
+        return {
+          ...m,
+          label,
+          enabled: true,
+          accountNumber: bankConfig.accountNumber,
+          accountHolder: bankConfig.accountHolder || m.accountHolder,
+        };
+      }
+      return bankConfig.bankOnlyMode ? { ...m, enabled: false } : m;
+    }),
+  };
+}
+
+export function getStaticStorefrontPayload(
+  bankConfig?: VercelBankConfig | null,
+): StorefrontPayload {
   const db = loadStaticDb();
   const activeProducts = db.products.filter((p) => p.status === 'active');
   return {
@@ -319,7 +375,7 @@ export function getStaticStorefrontPayload(): StorefrontPayload {
     settings: {
       theme: db.settings.theme,
       seo: db.settings.seo,
-      payment: db.settings.payment,
+      payment: applyVercelBankConfig(db.settings.payment, bankConfig),
       categories: db.settings.categories,
     },
     stats: {
@@ -336,11 +392,14 @@ export function getStaticAdminOverview(serverlessHealth?: {
   midtransConfigured?: boolean;
   webhookSecretConfigured?: boolean;
   paymentMode?: 'production' | 'sandbox';
+  bankConfig?: VercelBankConfig | null;
 }): AdminOverviewPayload {
   const db = loadStaticDb();
   const threshold = db.settings.telegram.lowStockThreshold ?? 5;
   const paidOrders = db.orders.filter((o) => o.status === 'PAID');
-  const pendingOrders = db.orders.filter((o) => o.status === 'PENDING');
+  const pendingOrders = db.orders.filter(
+    (o) => o.status === 'PENDING' || o.status === 'AWAITING_BANK' || o.status === 'PAYMENT_SUBMITTED',
+  );
   const activeProducts = db.products.filter((p) => p.status === 'active');
   const lowStockProducts = activeProducts.filter(
     (p) => !p.unlimitedStock && p.stock <= threshold,
@@ -349,7 +408,10 @@ export function getStaticAdminOverview(serverlessHealth?: {
   return {
     products: db.products,
     orders: db.orders,
-    settings: db.settings,
+    settings: {
+      ...db.settings,
+      payment: applyVercelBankConfig(db.settings.payment, serverlessHealth?.bankConfig),
+    },
     telegramStatus: {
       botTokenConfigured: Boolean(serverlessHealth?.telegramBotConfigured),
       envChatIdConfigured: Boolean(serverlessHealth?.telegramChatConfigured),
@@ -421,16 +483,25 @@ export function createStaticOrder(params: {
     paymentReference: `${params.paymentMethod.toUpperCase()}-${Math.floor(10000000 + Math.random() * 89999999)}`,
     items: resolvedItems,
     totalAmount,
-    status: 'PENDING',
+    status: params.paymentMethod === 'telegram_bank' ? 'AWAITING_BANK' : 'PENDING',
     downloadToken: `static-${Date.now()}`,
     telegramStatus: 'not_configured',
-    telegramMessage: 'Mode Statis (GitHub Pages): pesanan tersimpan di browser.',
+    telegramMessage: 'Menunggu pengiriman notifikasi Telegram...',
     createdAt: new Date().toISOString(),
   };
 
   db.orders.unshift(order);
   saveStaticDb(db);
   return order;
+}
+
+export function updateStaticOrder(orderId: string, patch: Partial<Order>): Order | null {
+  const db = loadStaticDb();
+  const order = db.orders.find((o) => o.id === orderId);
+  if (!order) return null;
+  Object.assign(order, patch);
+  saveStaticDb(db);
+  return { ...order };
 }
 
 export function confirmStaticOrderPayment(orderId: string): Order {

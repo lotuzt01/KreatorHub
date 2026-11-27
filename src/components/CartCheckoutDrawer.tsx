@@ -1,15 +1,19 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   AlertCircle,
   Check,
   CheckCircle2,
+  Clock,
   Copy,
   CreditCard,
   Download,
   ExternalLink,
+  Landmark,
+  Loader2,
   Minus,
   Plus,
   QrCode,
+  RefreshCw,
   Send,
   ShoppingBag,
   Trash2,
@@ -29,6 +33,7 @@ import {
   createStaticOrder,
   loadStaticDb,
   triggerStaticLicenseDownload,
+  updateStaticOrder,
 } from '../lib/staticFallback';
 import { SafeImage } from './SafeImage';
 
@@ -48,6 +53,41 @@ interface CartCheckoutDrawerProps {
 }
 
 type CheckoutStep = 'cart' | 'checkout' | 'payment' | 'success';
+
+const ACTIVE_ORDER_STORAGE_KEY = 'karsa_active_checkout_order_v1';
+
+function saveActiveOrderSession(order: Order | null): void {
+  try {
+    if (!order || order.status === 'PAID' || order.status === 'CANCELLED') {
+      window.localStorage.removeItem(ACTIVE_ORDER_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(ACTIVE_ORDER_STORAGE_KEY, JSON.stringify(order));
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function loadActiveOrderSession(): Order | null {
+  try {
+    const raw = window.localStorage.getItem(ACTIVE_ORDER_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Order;
+    if (
+      parsed &&
+      parsed.id &&
+      parsed.invoiceCode &&
+      (parsed.status === 'AWAITING_BANK' ||
+        parsed.status === 'PENDING' ||
+        parsed.status === 'PAYMENT_SUBMITTED')
+    ) {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 export function CartCheckoutDrawer({
   open,
@@ -69,19 +109,193 @@ export function CartCheckoutDrawer({
   const [customerEmail, setCustomerEmail] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
-    enabledMethods[0]?.id ?? 'qris',
+    enabledMethods[0]?.id ?? 'telegram_bank',
   );
   const [submitting, setSubmitting] = useState(false);
+  const [pollingNow, setPollingNow] = useState(false);
+  const [telegramNotConfigured, setTelegramNotConfigured] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeOrder, setActiveOrder] = useState<Order | null>(null);
+  const [activeOrder, setActiveOrder] = useState<Order | null>(() => loadActiveOrderSession());
   const [gatewayPaymentUrl, setGatewayPaymentUrl] = useState<string | null>(null);
   const [copiedAccount, setCopiedAccount] = useState(false);
+  const [copiedNominal, setCopiedNominal] = useState(false);
 
   useEffect(() => {
     if (enabledMethods.length > 0 && !enabledMethods.some((m) => m.id === paymentMethod)) {
       setPaymentMethod(enabledMethods[0].id);
     }
   }, [enabledMethods, paymentMethod]);
+
+  // Restore active awaiting/pending order when drawer opens (crucial on mobile browser reload)
+  useEffect(() => {
+    if (!open) return;
+    if (
+      activeOrder &&
+      (activeOrder.status === 'AWAITING_BANK' ||
+        activeOrder.status === 'PENDING' ||
+        activeOrder.status === 'PAYMENT_SUBMITTED') &&
+      step === 'cart' &&
+      items.length === 0
+    ) {
+      setStep('payment');
+    }
+  }, [open, activeOrder, step, items.length]);
+
+  const pollTelegramOrderStatus = useCallback(
+    async (order: Order, manual = false) => {
+      if (manual) setPollingNow(true);
+      try {
+        if (!isStaticMode) {
+          const res = await fetch(`/api/orders/${encodeURIComponent(order.id)}/status`, {
+            cache: 'no-store',
+          });
+          if (!res.ok) return;
+          const data = (await res.json()) as {
+            telegramConfigured?: boolean;
+            order?: Order;
+          };
+          setTelegramNotConfigured(data.telegramConfigured === false);
+          if (data.order) {
+            setActiveOrder(data.order);
+            saveActiveOrderSession(data.order);
+            if (data.order.status === 'PAID') {
+              onOrderCompleted();
+              setStep('success');
+            }
+          }
+          return;
+        }
+
+        if (!serverlessAvailable) {
+          setTelegramNotConfigured(true);
+          return;
+        }
+
+        const params = new URLSearchParams({
+          invoiceCode: order.invoiceCode,
+        });
+        if (order.telegramOrderMessageId) {
+          params.set('orderMsgId', String(order.telegramOrderMessageId));
+        }
+        if (order.telegramTransferMessageId) {
+          params.set('transferMsgId', String(order.telegramTransferMessageId));
+        }
+
+        const res = await fetch(`/api/telegram?${params.toString()}`, {
+          cache: 'no-store',
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          configured?: boolean;
+          stage?: 'AWAITING_BANK' | 'BANK_READY' | 'PAID' | 'CANCELLED';
+          bank?: {
+            bankName: string;
+            accountNumber: string;
+            accountHolder: string;
+            amount: number;
+          } | null;
+        };
+
+        setTelegramNotConfigured(data.configured === false);
+
+        if (data.stage === 'CANCELLED') {
+          const cancelledOrder =
+            updateStaticOrder(order.id, { status: 'CANCELLED' }) || {
+              ...order,
+              status: 'CANCELLED' as const,
+            };
+          setActiveOrder(cancelledOrder);
+          saveActiveOrderSession(null);
+          onOrderCompleted();
+          return;
+        }
+
+        if (data.stage === 'PAID') {
+          const bankPatch = data.bank
+            ? {
+                adminBankName: data.bank.bankName,
+                adminBankNumber: data.bank.accountNumber,
+                adminBankHolder: data.bank.accountHolder,
+                adminTransferAmount: data.bank.amount,
+              }
+            : {};
+          if (data.bank) {
+            updateStaticOrder(order.id, bankPatch);
+          }
+          const paidOrder = confirmStaticOrderPayment(order.id);
+          const mergedPaid: Order = {
+            ...paidOrder,
+            ...bankPatch,
+            telegramStatus: 'sent',
+            telegramMessage: 'Pembayaran dikonfirmasi LUNAS oleh admin melalui Telegram.',
+          };
+          setActiveOrder(mergedPaid);
+          saveActiveOrderSession(null);
+          onOrderCompleted();
+          setStep('success');
+          return;
+        }
+
+        if (data.bank) {
+          const nextStatus =
+            order.status === 'AWAITING_BANK' ? ('PENDING' as const) : order.status;
+          const bankChanged =
+            order.adminBankName !== data.bank.bankName ||
+            order.adminBankNumber !== data.bank.accountNumber ||
+            order.adminBankHolder !== data.bank.accountHolder ||
+            order.adminTransferAmount !== data.bank.amount ||
+            order.status !== nextStatus;
+
+          if (bankChanged) {
+            const updated =
+              updateStaticOrder(order.id, {
+                status: nextStatus,
+                adminBankName: data.bank.bankName,
+                adminBankNumber: data.bank.accountNumber,
+                adminBankHolder: data.bank.accountHolder,
+                adminTransferAmount: data.bank.amount,
+              }) || {
+                ...order,
+                status: nextStatus,
+                adminBankName: data.bank.bankName,
+                adminBankNumber: data.bank.accountNumber,
+                adminBankHolder: data.bank.accountHolder,
+                adminTransferAmount: data.bank.amount,
+              };
+            setActiveOrder(updated);
+            saveActiveOrderSession(updated);
+            onOrderCompleted();
+          }
+        }
+      } catch {
+        // Ignore transient network errors during background poll
+      } finally {
+        if (manual) setPollingNow(false);
+      }
+    },
+    [isStaticMode, serverlessAvailable, onOrderCompleted],
+  );
+
+  // Automatic real-time polling every 3 seconds while waiting for Telegram admin reply
+  useEffect(() => {
+    if (
+      !open ||
+      step !== 'payment' ||
+      !activeOrder ||
+      activeOrder.paymentMethod !== 'telegram_bank' ||
+      activeOrder.status === 'PAID' ||
+      activeOrder.status === 'CANCELLED'
+    ) {
+      return;
+    }
+
+    void pollTelegramOrderStatus(activeOrder);
+    const interval = window.setInterval(() => {
+      void pollTelegramOrderStatus(activeOrder);
+    }, 3000);
+
+    return () => window.clearInterval(interval);
+  }, [open, step, activeOrder, pollTelegramOrderStatus]);
 
   if (!open) return null;
 
@@ -96,23 +310,33 @@ export function CartCheckoutDrawer({
 
   const handleClose = () => {
     setError(null);
-    if (step === 'success') {
+    if (step === 'success' || activeOrder?.status === 'CANCELLED') {
       setStep('cart');
       setActiveOrder(null);
+      saveActiveOrderSession(null);
       setGatewayPaymentUrl(null);
     }
     onClose();
   };
 
+  const handleAbandonWaitingOrder = () => {
+    setError(null);
+    setActiveOrder(null);
+    saveActiveOrderSession(null);
+    setStep('cart');
+  };
+
   const notifyServerlessTelegram = async (
     order: Order,
-    event: 'order_created' | 'order_paid',
-  ): Promise<string | null> => {
-    if (!serverlessAvailable) return null;
+    event: 'order_created' | 'transfer_submitted' | 'order_paid',
+  ): Promise<{ detail: string | null; status?: 'sent' | 'not_configured' | 'failed'; messageId?: number }> => {
+    if (!serverlessAvailable) return { detail: null };
     try {
       const staticPrefs = loadStaticDb().settings.telegram;
-      if (event === 'order_created' && !staticPrefs.notifyOnOrderCreated) return null;
-      if (event === 'order_paid' && !staticPrefs.notifyOnOrderPaid) return null;
+      if (event === 'order_created' && !staticPrefs.notifyOnOrderCreated && order.paymentMethod !== 'telegram_bank') {
+        return { detail: null };
+      }
+      if (event === 'order_paid' && !staticPrefs.notifyOnOrderPaid) return { detail: null };
 
       const tgRes = await fetch('/api/telegram', {
         method: 'POST',
@@ -130,10 +354,19 @@ export function CartCheckoutDrawer({
           items: order.items,
           chatIdOverride: staticPrefs.customChatIdOverride || undefined,
           messageHeader: staticPrefs.messageHeader,
+          adminBankName: order.adminBankName,
+          adminBankNumber: order.adminBankNumber,
+          adminBankHolder: order.adminBankHolder,
+          adminTransferAmount: order.adminTransferAmount,
         }),
       });
       const tgData = (await tgRes.json().catch(() => null)) as
-        | { status?: 'sent' | 'not_configured' | 'failed'; detail?: string; preview?: string }
+        | {
+            status?: 'sent' | 'not_configured' | 'failed';
+            detail?: string;
+            preview?: string;
+            messageId?: number | null;
+          }
         | null;
       if (tgData?.status) {
         appendStaticTelegramLog({
@@ -145,18 +378,23 @@ export function CartCheckoutDrawer({
           detail: tgData.detail || '',
           preview: tgData.preview || `Invoice ${order.invoiceCode}`,
         });
-        return tgData.detail || null;
+        return {
+          detail: tgData.detail || null,
+          status: tgData.status,
+          messageId: typeof tgData.messageId === 'number' ? tgData.messageId : undefined,
+        };
       }
     } catch {
-      return null;
+      return { detail: null };
     }
-    return null;
+    return { detail: null };
   };
 
   const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setGatewayPaymentUrl(null);
+    setTelegramNotConfigured(false);
 
     if (customerName.trim().length < 2) {
       setError('Masukkan nama lengkap Anda (minimal 2 karakter).');
@@ -183,35 +421,49 @@ export function CartCheckoutDrawer({
         });
 
         if (serverlessAvailable) {
-          // Create automated payment session via Vercel /api/payment if Midtrans key is set
-          try {
-            const payRes = await fetch('/api/payment', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                invoiceCode: order.invoiceCode,
-                totalAmount: order.totalAmount,
-                customerName: order.customerName,
-                customerEmail: order.customerEmail,
-                customerPhone: order.customerPhone,
-                paymentMethod: order.paymentMethod,
-              }),
-            });
-            const payData = (await payRes.json().catch(() => null)) as
-              | { paymentUrl?: string | null; paymentReference?: string }
-              | null;
-            if (payRes.ok && payData?.paymentUrl && isSafeHttpOrLocalUrl(payData.paymentUrl)) {
-              setGatewayPaymentUrl(payData.paymentUrl);
+          if (paymentMethod !== 'telegram_bank') {
+            try {
+              const payRes = await fetch('/api/payment', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  invoiceCode: order.invoiceCode,
+                  totalAmount: order.totalAmount,
+                  customerName: order.customerName,
+                  customerEmail: order.customerEmail,
+                  customerPhone: order.customerPhone,
+                  paymentMethod: order.paymentMethod,
+                }),
+              });
+              const payData = (await payRes.json().catch(() => null)) as
+                | { paymentUrl?: string | null; paymentReference?: string }
+                | null;
+              if (payRes.ok && payData?.paymentUrl && isSafeHttpOrLocalUrl(payData.paymentUrl)) {
+                setGatewayPaymentUrl(payData.paymentUrl);
+              }
+            } catch {
+              // Continue with built-in details
             }
-          } catch {
-            // Continue with built-in QRIS/VA details
           }
 
-          const tgNote = await notifyServerlessTelegram(order, 'order_created');
-          if (tgNote) order.telegramMessage = tgNote;
+          const tgRes = await notifyServerlessTelegram(order, 'order_created');
+          if (tgRes.status) order.telegramStatus = tgRes.status;
+          if (tgRes.detail) order.telegramMessage = tgRes.detail;
+          if (tgRes.messageId) order.telegramOrderMessageId = tgRes.messageId;
+          if (tgRes.status === 'not_configured') {
+            setTelegramNotConfigured(true);
+          }
+          updateStaticOrder(order.id, {
+            telegramStatus: order.telegramStatus,
+            telegramMessage: order.telegramMessage,
+            telegramOrderMessageId: order.telegramOrderMessageId,
+          });
+        } else if (paymentMethod === 'telegram_bank') {
+          setTelegramNotConfigured(true);
         }
 
         setActiveOrder(order);
+        saveActiveOrderSession(order);
         onClearCart();
         onOrderCompleted();
         setStep('payment');
@@ -233,12 +485,57 @@ export function CartCheckoutDrawer({
       if (!res.ok || !data.order) {
         throw new Error(data.error || 'Gagal membuat pesanan.');
       }
+      if (data.order.telegramStatus === 'not_configured') {
+        setTelegramNotConfigured(true);
+      }
       setActiveOrder(data.order);
+      saveActiveOrderSession(data.order);
       onClearCart();
       onOrderCompleted();
       setStep('payment');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Terjadi kesalahan saat memproses pesanan.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSubmitTransfer = async () => {
+    if (!activeOrder) return;
+    setError(null);
+    setSubmitting(true);
+    try {
+      if (isStaticMode) {
+        const tgRes = await notifyServerlessTelegram(activeOrder, 'transfer_submitted');
+        const updated =
+          updateStaticOrder(activeOrder.id, {
+            status: 'PAYMENT_SUBMITTED',
+            telegramStatus: tgRes.status || activeOrder.telegramStatus,
+            telegramMessage: tgRes.detail || activeOrder.telegramMessage,
+            telegramTransferMessageId: tgRes.messageId || activeOrder.telegramTransferMessageId,
+          }) || {
+            ...activeOrder,
+            status: 'PAYMENT_SUBMITTED' as const,
+            telegramTransferMessageId: tgRes.messageId || activeOrder.telegramTransferMessageId,
+          };
+        setActiveOrder(updated);
+        saveActiveOrderSession(updated);
+        onOrderCompleted();
+        return;
+      }
+
+      const res = await fetch(`/api/orders/${encodeURIComponent(activeOrder.id)}/submit-transfer`, {
+        method: 'POST',
+      });
+      const data = (await res.json()) as { order?: Order; error?: string };
+      if (!res.ok || !data.order) {
+        throw new Error(data.error || 'Gagal mengirim konfirmasi transfer.');
+      }
+      setActiveOrder(data.order);
+      saveActiveOrderSession(data.order);
+      onOrderCompleted();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal mengirim konfirmasi transfer.');
     } finally {
       setSubmitting(false);
     }
@@ -252,13 +549,14 @@ export function CartCheckoutDrawer({
       if (isStaticMode) {
         const paidOrder = confirmStaticOrderPayment(activeOrder.id);
         if (serverlessAvailable) {
-          const tgNote = await notifyServerlessTelegram(paidOrder, 'order_paid');
-          if (tgNote) {
-            paidOrder.telegramMessage = tgNote;
-            paidOrder.telegramStatus = tgNote.includes('terkirim') ? 'sent' : 'not_configured';
+          const tgRes = await notifyServerlessTelegram(paidOrder, 'order_paid');
+          if (tgRes.detail) {
+            paidOrder.telegramMessage = tgRes.detail;
+            paidOrder.telegramStatus = tgRes.status || 'not_configured';
           }
         }
         setActiveOrder({ ...paidOrder });
+        saveActiveOrderSession(null);
         onOrderCompleted();
         setStep('success');
         return;
@@ -272,6 +570,7 @@ export function CartCheckoutDrawer({
         throw new Error(data.error || 'Gagal memverifikasi pembayaran.');
       }
       setActiveOrder(data.order);
+      saveActiveOrderSession(null);
       onOrderCompleted();
       setStep('success');
     } catch (err) {
@@ -279,6 +578,24 @@ export function CartCheckoutDrawer({
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const isTelegramFlow = activeOrder?.paymentMethod === 'telegram_bank';
+
+  const getHeaderTitle = () => {
+    if (step === 'cart') return 'Keranjang Belanja';
+    if (step === 'checkout') return 'Data Pembeli & Checkout';
+    if (step === 'success') return 'Pembayaran Lunas';
+    if (isTelegramFlow && activeOrder?.status === 'AWAITING_BANK') {
+      return 'Menunggu Rekening Admin';
+    }
+    if (isTelegramFlow && activeOrder?.status === 'PAYMENT_SUBMITTED') {
+      return 'Menunggu Verifikasi Admin';
+    }
+    if (activeOrder?.status === 'CANCELLED') {
+      return 'Pesanan Dibatalkan';
+    }
+    return 'Detail Pembayaran';
   };
 
   return (
@@ -297,14 +614,11 @@ export function CartCheckoutDrawer({
         <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4 dark:border-zinc-800">
           <div>
             <h2 className="font-display text-lg font-bold text-slate-900 dark:text-zinc-50">
-              {step === 'cart' && 'Keranjang Belanja'}
-              {step === 'checkout' && 'Data Pembeli & Pembayaran'}
-              {step === 'payment' && 'Menunggu Pembayaran'}
-              {step === 'success' && 'Pembayaran Lunas'}
+              {getHeaderTitle()}
             </h2>
             <p className="text-xs text-slate-500 dark:text-zinc-400">
               {step === 'cart' && `${resolvedCart.length} produk dipilih`}
-              {step === 'checkout' && 'Akses unduhan dikirim otomatis setelah pembayaran terverifikasi'}
+              {step === 'checkout' && 'Detail rekening & nominal dikirim langsung dari Telegram Admin'}
               {step === 'payment' && activeOrder?.invoiceCode}
               {step === 'success' && `Invoice ${activeOrder?.invoiceCode} terkonfirmasi`}
             </p>
@@ -328,6 +642,34 @@ export function CartCheckoutDrawer({
             </div>
           )}
 
+          {/* Resume active order banner if buyer is on cart step while having a live order */}
+          {step === 'cart' &&
+            activeOrder &&
+            (activeOrder.status === 'AWAITING_BANK' ||
+              activeOrder.status === 'PENDING' ||
+              activeOrder.status === 'PAYMENT_SUBMITTED') && (
+              <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50/70 p-3.5 text-xs dark:border-blue-900/60 dark:bg-blue-950/30">
+                <p className="font-semibold text-blue-950 dark:text-blue-100">
+                  Pesanan aktif: {activeOrder.invoiceCode}
+                </p>
+                <p className="mt-0.5 text-blue-800 dark:text-blue-200">
+                  {activeOrder.status === 'AWAITING_BANK'
+                    ? 'Sedang menunggu detail rekening dari Telegram Admin.'
+                    : activeOrder.status === 'PENDING'
+                      ? 'Detail rekening & nominal sudah diterima — siap ditransfer.'
+                      : 'Menunggu verifikasi mutasi dari Telegram Admin.'}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setStep('payment')}
+                  style={{ backgroundColor: 'var(--store-accent)' }}
+                  className="mt-2.5 inline-flex h-8 cursor-pointer items-center rounded-lg px-3 text-xs font-semibold text-white hover:opacity-90"
+                >
+                  Lanjutkan Pesanan Ini
+                </button>
+              </div>
+            )}
+
           {/* STEP 1: CART */}
           {step === 'cart' && (
             <>
@@ -338,7 +680,7 @@ export function CartCheckoutDrawer({
                     Keranjang masih kosong
                   </p>
                   <p className="mt-1 max-w-xs text-sm text-slate-500 dark:text-zinc-400">
-                    Pilih template, e-book, atau starter kit dari katalog untuk memulai checkout otomatis.
+                    Pilih produk digital dari katalog untuk melanjutkan proses checkout.
                   </p>
                 </div>
               ) : (
@@ -466,7 +808,7 @@ export function CartCheckoutDrawer({
 
               <div className="border-t border-slate-200 pt-4 dark:border-zinc-800">
                 <p className="text-xs font-semibold text-slate-700 dark:text-zinc-300">
-                  Pilih Metode Pembayaran ({paymentSettings.merchantName})
+                  Metode Pembayaran
                 </p>
                 <div className="mt-2.5 space-y-2">
                   {enabledMethods.map((opt) => {
@@ -482,7 +824,7 @@ export function CartCheckoutDrawer({
                             : 'border-slate-200 bg-white hover:bg-slate-50 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-800/70'
                         }`}
                       >
-                        <div>
+                        <div className="pr-3">
                           <p className="text-sm font-semibold text-slate-900 dark:text-zinc-100">
                             {opt.label}
                           </p>
@@ -490,22 +832,277 @@ export function CartCheckoutDrawer({
                             {opt.description}
                           </p>
                         </div>
-                        <CreditCard
-                          className={`h-4 w-4 shrink-0 ${
-                            selected ? 'text-blue-600 dark:text-blue-400' : 'text-slate-400'
-                          }`}
-                          aria-hidden="true"
-                        />
+                        {opt.id === 'telegram_bank' || opt.id === 'bank_transfer' ? (
+                          <Landmark
+                            className={`h-4 w-4 shrink-0 ${
+                              selected ? 'text-blue-600 dark:text-blue-400' : 'text-slate-400'
+                            }`}
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <CreditCard
+                            className={`h-4 w-4 shrink-0 ${
+                              selected ? 'text-blue-600 dark:text-blue-400' : 'text-slate-400'
+                            }`}
+                            aria-hidden="true"
+                          />
+                        )}
                       </button>
                     );
                   })}
                 </div>
+
+                {paymentMethod === 'telegram_bank' && (
+                  <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3.5 text-xs leading-relaxed text-slate-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
+                    <p className="font-semibold text-slate-900 dark:text-zinc-100">
+                      Cara kerja pembayaran:
+                    </p>
+                    <ol className="mt-1.5 list-decimal space-y-1 pl-4">
+                      <li>Pesanan Anda langsung dikirim ke Telegram Admin.</li>
+                      <li>
+                        Admin mengirim <strong>Nama Bank</strong>, <strong>Nomor Rekening</strong>, dan{' '}
+                        <strong>Nominal</strong> langsung ke layar checkout ini.
+                      </li>
+                      <li>Setelah Anda transfer dan Admin mengonfirmasi, tautan unduhan langsung terbuka.</li>
+                    </ol>
+                  </div>
+                )}
               </div>
             </form>
           )}
 
-          {/* STEP 3: AUTOMATED PAYMENT VERIFICATION */}
-          {step === 'payment' && activeOrder && (() => {
+          {/* STEP 3: TELEGRAM TWO-WAY BANK CONFIRMATION FLOW */}
+          {step === 'payment' && activeOrder && isTelegramFlow && (
+            <div className="space-y-5">
+              {/* Sub-stage A: AWAITING_BANK */}
+              {activeOrder.status === 'AWAITING_BANK' && (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-center dark:border-zinc-800 dark:bg-zinc-900">
+                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-xl border border-blue-200 bg-blue-50 text-blue-600 dark:border-blue-900/60 dark:bg-blue-950/50 dark:text-blue-400">
+                    <Loader2 className="h-7 w-7 animate-spin" aria-hidden="true" />
+                  </div>
+
+                  <h3 className="mt-4 font-display text-base font-bold text-slate-900 dark:text-zinc-50">
+                    Menunggu Konfirmasi Rekening dari Admin
+                  </h3>
+                  <p className="mt-1.5 text-xs leading-relaxed text-slate-600 dark:text-zinc-400">
+                    Pesanan <span className="font-mono font-semibold text-slate-900 dark:text-zinc-100">{activeOrder.invoiceCode}</span>{' '}
+                    telah dikirim ke Telegram Admin. Layar ini akan otomatis menampilkan{' '}
+                    <strong>Nama Bank</strong>, <strong>Nomor Rekening</strong>, dan{' '}
+                    <strong>Nominal</strong> begitu Admin membalas.
+                  </p>
+
+                  <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                    <button
+                      type="button"
+                      disabled={pollingNow}
+                      onClick={() => void pollTelegramOrderStatus(activeOrder, true)}
+                      className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${pollingNow ? 'animate-spin' : ''}`} />
+                      <span>{pollingNow ? 'Memeriksa...' : 'Periksa Sekarang'}</span>
+                    </button>
+                  </div>
+
+                  <p className="mt-3 text-[11px] text-slate-400 dark:text-zinc-500">
+                    Pembaruan dicek otomatis setiap 3 detik — jangan tutup halaman ini.
+                  </p>
+                </div>
+              )}
+
+              {/* Sub-stage B: PENDING (Bank Details Received from Telegram!) */}
+              {activeOrder.status === 'PENDING' && (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-5 dark:border-emerald-900/60 dark:bg-emerald-950/25">
+                  <div className="flex items-center justify-center gap-2 text-xs font-semibold text-emerald-800 dark:text-emerald-300">
+                    <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                    <span>Detail Rekening Diterima dari Telegram Admin</span>
+                  </div>
+
+                  <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 text-center dark:border-zinc-800 dark:bg-zinc-950">
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-zinc-400">
+                      Bank Tujuan Transfer
+                    </p>
+                    <p className="mt-1 font-display text-lg font-bold text-slate-900 dark:text-zinc-50">
+                      {activeOrder.adminBankName || 'Transfer Bank'}
+                    </p>
+                    {activeOrder.adminBankHolder && (
+                      <p className="mt-0.5 text-xs text-slate-600 dark:text-zinc-400">
+                        a.n. {activeOrder.adminBankHolder}
+                      </p>
+                    )}
+
+                    <div className="mt-3 flex items-center justify-center gap-2">
+                      <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 font-mono text-sm font-bold tracking-wide text-slate-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50">
+                        {activeOrder.adminBankNumber || '-'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!activeOrder.adminBankNumber) return;
+                          navigator.clipboard?.writeText(activeOrder.adminBankNumber);
+                          setCopiedAccount(true);
+                          setTimeout(() => setCopiedAccount(false), 1800);
+                        }}
+                        className="inline-flex h-8 cursor-pointer items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                      >
+                        {copiedAccount ? (
+                          <>
+                            <Check className="h-3.5 w-3.5 text-emerald-600" />
+                            <span>Disalin</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="h-3.5 w-3.5" />
+                            <span>Salin</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    <div className="mt-4 border-t border-slate-200 pt-4 dark:border-zinc-800">
+                      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-zinc-400">
+                        Nominal Transfer
+                      </p>
+                      <div className="mt-1 flex items-center justify-center gap-2">
+                        <p className="font-mono text-2xl font-bold tabular-nums text-slate-900 dark:text-zinc-50">
+                          {formatIDR(activeOrder.adminTransferAmount ?? activeOrder.totalAmount)}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const rawAmount = String(
+                              activeOrder.adminTransferAmount ?? activeOrder.totalAmount,
+                            );
+                            navigator.clipboard?.writeText(rawAmount);
+                            setCopiedNominal(true);
+                            setTimeout(() => setCopiedNominal(false), 1800);
+                          }}
+                          className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                        >
+                          {copiedNominal ? (
+                            <>
+                              <Check className="h-3 w-3 text-emerald-600" />
+                              <span>Disalin</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-3 w-3" />
+                              <span>Salin</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="mt-3 text-center text-xs leading-relaxed text-emerald-900 dark:text-emerald-200">
+                    Silakan transfer sesuai nominal di atas, lalu tekan tombol{' '}
+                    <strong>Saya Sudah Transfer</strong> di bawah ini.
+                  </p>
+                </div>
+              )}
+
+              {/* Sub-stage C: PAYMENT_SUBMITTED (Waiting for Admin LUNAS) */}
+              {activeOrder.status === 'PAYMENT_SUBMITTED' && (
+                <div className="rounded-xl border border-blue-200 bg-blue-50/60 p-6 text-center dark:border-blue-900/60 dark:bg-blue-950/30">
+                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-xl border border-blue-200 bg-white text-blue-600 dark:border-blue-800 dark:bg-zinc-950 dark:text-blue-400">
+                    <Clock className="h-7 w-7" aria-hidden="true" />
+                  </div>
+
+                  <h3 className="mt-4 font-display text-base font-bold text-slate-900 dark:text-zinc-50">
+                    Konfirmasi Transfer Terkirim
+                  </h3>
+                  <p className="mt-1.5 text-xs leading-relaxed text-slate-600 dark:text-zinc-300">
+                    Admin sedang mengecek mutasi masuk ke{' '}
+                    <strong>
+                      {activeOrder.adminBankName} ({activeOrder.adminBankNumber})
+                    </strong>{' '}
+                    sebesar{' '}
+                    <strong className="font-mono">
+                      {formatIDR(activeOrder.adminTransferAmount ?? activeOrder.totalAmount)}
+                    </strong>
+                    . Produk akan otomatis terbuka begitu Admin membalas konfirmasi di Telegram.
+                  </p>
+
+                  <button
+                    type="button"
+                    disabled={pollingNow}
+                    onClick={() => void pollTelegramOrderStatus(activeOrder, true)}
+                    className="mt-4 inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-60 dark:border-blue-800 dark:bg-zinc-950 dark:text-blue-300 dark:hover:bg-zinc-900"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${pollingNow ? 'animate-spin' : ''}`} />
+                    <span>{pollingNow ? 'Memeriksa...' : 'Periksa Status Lunas'}</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Sub-stage D: CANCELLED */}
+              {activeOrder.status === 'CANCELLED' && (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-5 text-center dark:border-red-900/60 dark:bg-red-950/40">
+                  <AlertCircle className="mx-auto h-8 w-8 text-red-600 dark:text-red-400" />
+                  <h3 className="mt-3 font-display text-base font-bold text-red-900 dark:text-red-100">
+                    Pesanan Dibatalkan Admin
+                  </h3>
+                  <p className="mt-1 text-xs text-red-800 dark:text-red-200">
+                    Pesanan {activeOrder.invoiceCode} dibatalkan melalui Telegram Admin. Silakan buat
+                    pesanan ulang atau hubungi admin.
+                  </p>
+                </div>
+              )}
+
+              {/* Notice if Telegram bot secrets aren't configured yet */}
+              {telegramNotConfigured && activeOrder.status !== 'CANCELLED' && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3.5 text-xs leading-relaxed text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200">
+                  <p className="font-semibold">Bot Telegram belum aktif di lingkungan ini</p>
+                  <p className="mt-1">
+                    Pastikan <span className="font-mono">TELEGRAM_BOT_TOKEN</span> dan{' '}
+                    <span className="font-mono">TELEGRAM_CHAT_ID</span> sudah dipasang di Vercel
+                    Environment Variables lalu klik Redeploy agar balasan Telegram otomatis muncul di sini.
+                  </p>
+                </div>
+              )}
+
+              {/* Order Summary */}
+              <div className="space-y-2 border-t border-slate-200 pt-4 text-sm dark:border-zinc-800">
+                <div className="flex justify-between">
+                  <span className="text-slate-500 dark:text-zinc-400">Nomor Invoice</span>
+                  <span className="font-mono font-medium text-slate-900 dark:text-zinc-100">
+                    {activeOrder.invoiceCode}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500 dark:text-zinc-400">Pembeli</span>
+                  <span className="font-medium text-slate-900 dark:text-zinc-100">
+                    {activeOrder.customerName}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500 dark:text-zinc-400">Email</span>
+                  <span className="text-slate-900 dark:text-zinc-100">{activeOrder.customerEmail}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500 dark:text-zinc-400">Estimasi Pesanan</span>
+                  <span className="font-mono font-semibold tabular-nums text-slate-900 dark:text-zinc-100">
+                    {formatIDR(activeOrder.adminTransferAmount ?? activeOrder.totalAmount)}
+                  </span>
+                </div>
+              </div>
+
+              {activeOrder.status !== 'CANCELLED' && (
+                <div className="text-center">
+                  <button
+                    type="button"
+                    onClick={handleAbandonWaitingOrder}
+                    className="cursor-pointer text-xs font-medium text-slate-400 underline-offset-2 hover:text-slate-600 hover:underline dark:text-zinc-500 dark:hover:text-zinc-300"
+                  >
+                    Batalkan tampilan ini &amp; kembali ke keranjang
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* STEP 3B: REGULAR PAYMENT METHODS (STATIC BANK / QRIS / VA) */}
+          {step === 'payment' && activeOrder && !isTelegramFlow && (() => {
             const methodCfg = paymentSettings.methods.find((m) => m.id === activeOrder.paymentMethod);
             const accountNumber =
               activeOrder.paymentMethod === 'qris'
@@ -528,7 +1125,11 @@ export function CartCheckoutDrawer({
                     </div>
                   ) : (
                     <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100">
-                      <QrCode className="h-8 w-8" aria-hidden="true" />
+                      {activeOrder.paymentMethod === 'bank_transfer' ? (
+                        <Landmark className="h-7 w-7" aria-hidden="true" />
+                      ) : (
+                        <QrCode className="h-8 w-8" aria-hidden="true" />
+                      )}
                     </div>
                   )}
 
@@ -684,13 +1285,13 @@ export function CartCheckoutDrawer({
                 <Send className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />
                 <div>
                   <p className="font-semibold text-slate-900 dark:text-zinc-100">
-                    Status Notifikasi Bot Telegram
+                    Status Konfirmasi Telegram
                   </p>
                   <p className="mt-0.5">
                     {activeOrder.telegramMessage ||
                       (activeOrder.telegramStatus === 'sent'
-                        ? 'Notifikasi pesanan terkirim real-time ke Telegram admin.'
-                        : 'Pesanan tercatat di dasbor admin. Atur TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID di Secrets untuk pengiriman real-time.')}
+                        ? 'Pembayaran telah dikonfirmasi melalui Telegram admin.'
+                        : 'Pesanan tercatat di dasbor admin.')}
                   </p>
                 </div>
               </div>
@@ -717,7 +1318,7 @@ export function CartCheckoutDrawer({
                 }}
                 className="h-11 w-full cursor-pointer text-sm font-semibold text-white transition-opacity hover:opacity-90 whitespace-nowrap"
               >
-                Lanjut ke Pembayaran
+                Lanjut ke Checkout
               </button>
             </div>
           )}
@@ -744,12 +1345,71 @@ export function CartCheckoutDrawer({
                 }}
                 className="h-11 flex-1 cursor-pointer text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60 whitespace-nowrap"
               >
-                {submitting ? 'Memproses Pesanan...' : `Bayar ${formatIDR(subtotal)}`}
+                {submitting
+                  ? 'Mengirim ke Telegram...'
+                  : paymentMethod === 'telegram_bank'
+                    ? 'Kirim Pesanan & Minta Rekening'
+                    : `Bayar ${formatIDR(subtotal)}`}
               </button>
             </div>
           )}
 
-          {step === 'payment' && (
+          {/* Footer for Telegram Two-Way Flow */}
+          {step === 'payment' && activeOrder && isTelegramFlow && (
+            <>
+              {activeOrder.status === 'AWAITING_BANK' && (
+                <button
+                  type="button"
+                  disabled={pollingNow}
+                  onClick={() => void pollTelegramOrderStatus(activeOrder, true)}
+                  className="flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+                >
+                  <RefreshCw className={`h-4 w-4 ${pollingNow ? 'animate-spin' : ''}`} />
+                  <span>{pollingNow ? 'Memeriksa Telegram...' : 'Menunggu Rekening dari Admin'}</span>
+                </button>
+              )}
+
+              {activeOrder.status === 'PENDING' && (
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={handleSubmitTransfer}
+                  style={{
+                    backgroundColor: 'var(--store-accent)',
+                    borderRadius: 'var(--store-radius)',
+                  }}
+                  className="h-11 w-full cursor-pointer text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60 whitespace-nowrap"
+                >
+                  {submitting ? 'Mengirim Konfirmasi...' : 'Saya Sudah Transfer'}
+                </button>
+              )}
+
+              {activeOrder.status === 'PAYMENT_SUBMITTED' && (
+                <button
+                  type="button"
+                  disabled={pollingNow}
+                  onClick={() => void pollTelegramOrderStatus(activeOrder, true)}
+                  className="flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 text-sm font-semibold text-blue-800 hover:bg-blue-100 disabled:opacity-60 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-200 dark:hover:bg-blue-950/60"
+                >
+                  <RefreshCw className={`h-4 w-4 ${pollingNow ? 'animate-spin' : ''}`} />
+                  <span>{pollingNow ? 'Memeriksa Konfirmasi...' : 'Menunggu Konfirmasi Lunas Admin'}</span>
+                </button>
+              )}
+
+              {activeOrder.status === 'CANCELLED' && (
+                <button
+                  type="button"
+                  onClick={handleClose}
+                  className="h-11 w-full cursor-pointer rounded-lg border border-slate-300 bg-white text-sm font-semibold text-slate-900 hover:bg-slate-50 whitespace-nowrap dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+                >
+                  Kembali ke Katalog
+                </button>
+              )}
+            </>
+          )}
+
+          {/* Footer for Regular Non-Telegram Flow */}
+          {step === 'payment' && activeOrder && !isTelegramFlow && (
             <button
               type="button"
               disabled={submitting}

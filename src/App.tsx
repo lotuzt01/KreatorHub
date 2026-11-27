@@ -81,11 +81,7 @@ export default function App() {
       }
     } catch {
       // Automatic fallback for Vercel Serverless or GitHub Pages static hosting
-      const fallback = getStaticStorefrontPayload();
-      setIsStaticMode(true);
-      setStorefront(fallback);
-
-      // Probe Vercel Serverless /api/health to detect live /api/telegram & /api/payment functions
+      let detectedHealth: ServerlessHealthInfo | null = null;
       try {
         const healthRes = await fetch('/api/health', {
           headers: { Accept: 'application/json' },
@@ -94,12 +90,17 @@ export default function App() {
         if (healthRes.ok && healthType.includes('application/json')) {
           const healthData = (await healthRes.json()) as ServerlessHealthInfo;
           if (healthData?.ok) {
-            setServerlessHealth(healthData);
+            detectedHealth = healthData;
           }
         }
       } catch {
-        setServerlessHealth(null);
+        detectedHealth = null;
       }
+
+      const fallback = getStaticStorefrontPayload(detectedHealth?.bankConfig);
+      setIsStaticMode(true);
+      setServerlessHealth(detectedHealth);
+      setStorefront(fallback);
 
       if (!userToggledTheme) {
         setIsDark(fallback.settings.theme.defaultMode === 'dark');

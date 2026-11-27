@@ -46,19 +46,40 @@ function createSeedFile(fileKey: string, content: string): string {
 }
 
 export function getDefaultPaymentSettings(): PaymentSettings {
+  const envBankName = (process.env.BANK_NAME || '').trim();
+  const envBankNumber = (process.env.BANK_ACCOUNT_NUMBER || '').trim();
+  const envBankHolder = (process.env.BANK_ACCOUNT_HOLDER || '').trim();
+  const hasStaticBankEnv = envBankNumber.length > 0;
+
   return {
     provider: 'builtin_auto',
-    merchantName: 'Karsa Digital Studio',
+    merchantName: envBankHolder || 'Karsa Digital Studio',
     qrisMerchantId: 'ID1026384920192',
     qrisImageUrl: '',
     expiryMinutes: 30,
     autoConfirmDemo: true,
     methods: [
       {
+        id: 'telegram_bank',
+        label: 'Transfer Bank via Konfirmasi Telegram',
+        description: 'Admin akan mengirim Nama Bank, Nomor Rekening, & Nominal langsung dari Telegram ke layar ini',
+        enabled: true,
+        accountNumber: '',
+        accountHolder: '',
+      },
+      {
+        id: 'bank_transfer',
+        label: envBankName ? `Transfer Bank ${envBankName}` : 'Transfer Rekening Bank (Tetap)',
+        description: 'Transfer langsung ke nomor rekening tetap pemilik toko',
+        enabled: hasStaticBankEnv,
+        accountNumber: envBankNumber || '1234567890',
+        accountHolder: envBankHolder || 'Nama Pemilik Rekening',
+      },
+      {
         id: 'qris',
         label: 'QRIS Otomatis',
         description: 'Verifikasi instan semua e-wallet & m-banking Indonesia',
-        enabled: true,
+        enabled: false,
         accountNumber: 'ID1026384920192',
         accountHolder: 'Karsa Digital Studio',
       },
@@ -66,7 +87,7 @@ export function getDefaultPaymentSettings(): PaymentSettings {
         id: 'va_bca',
         label: 'Virtual Account BCA',
         description: 'Konfirmasi otomatis tanpa unggah bukti transfer',
-        enabled: true,
+        enabled: false,
         accountNumber: '8801081290441120',
         accountHolder: 'PT Karsa Digital Nusantara',
       },
@@ -74,7 +95,7 @@ export function getDefaultPaymentSettings(): PaymentSettings {
         id: 'va_mandiri',
         label: 'Virtual Account Mandiri',
         description: 'Nomor VA unik untuk pesanan ini',
-        enabled: true,
+        enabled: false,
         accountNumber: '8950808129044112',
         accountHolder: 'PT Karsa Digital Nusantara',
       },
@@ -82,7 +103,7 @@ export function getDefaultPaymentSettings(): PaymentSettings {
         id: 'ewallet_gopay',
         label: 'GoPay Instan',
         description: 'Pembayaran langsung dari aplikasi Gojek',
-        enabled: true,
+        enabled: false,
         accountNumber: '081290441120',
         accountHolder: 'Karsa Digital',
       },
@@ -90,7 +111,7 @@ export function getDefaultPaymentSettings(): PaymentSettings {
         id: 'ewallet_dana',
         label: 'DANA Instan',
         description: 'Bebas biaya administrasi tambahan',
-        enabled: true,
+        enabled: false,
         accountNumber: '081290441120',
         accountHolder: 'Karsa Digital',
       },
@@ -435,7 +456,12 @@ export function loadDatabase(): StoreDatabase {
           methods:
             Array.isArray(parsed.settings?.payment?.methods) &&
             parsed.settings.payment.methods.length > 0
-              ? parsed.settings.payment.methods
+              ? parsed.settings.payment.methods.some((m) => m.id === 'telegram_bank')
+                ? parsed.settings.payment.methods
+                : [
+                    defaults.payment.methods[0],
+                    ...parsed.settings.payment.methods.map((m) => ({ ...m, enabled: false })),
+                  ]
               : defaults.payment.methods,
         },
         categories:

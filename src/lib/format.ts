@@ -23,6 +23,10 @@ export function formatDateTimeID(iso: string): string {
 
 export function formatPaymentMethodLabel(method: PaymentMethod): string {
   switch (method) {
+    case 'telegram_bank':
+      return 'Transfer Bank via Konfirmasi Telegram';
+    case 'bank_transfer':
+      return 'Transfer Rekening Bank';
     case 'qris':
       return 'QRIS Otomatis';
     case 'va_bca':

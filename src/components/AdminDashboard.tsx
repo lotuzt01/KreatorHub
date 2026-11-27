@@ -46,6 +46,12 @@ export interface ServerlessHealthInfo {
   midtransConfigured: boolean;
   webhookSecretConfigured: boolean;
   paymentMode: 'production' | 'sandbox';
+  bankConfig?: {
+    bankName: string;
+    accountNumber: string;
+    accountHolder: string;
+    bankOnlyMode: boolean;
+  } | null;
 }
 
 type AdminTab = 'orders' | 'products' | 'payment' | 'theme' | 'telegram' | 'deploy';
@@ -224,7 +230,13 @@ export function AdminDashboard({
     if (!overview) return [];
     const q = orderSearch.trim().toLowerCase();
     return overview.orders.filter((o) => {
-      const matchStatus = orderFilter === 'ALL' || o.status === orderFilter;
+      const matchStatus =
+        orderFilter === 'ALL' ||
+        (orderFilter === 'PENDING'
+          ? o.status === 'PENDING' ||
+            o.status === 'AWAITING_BANK' ||
+            o.status === 'PAYMENT_SUBMITTED'
+          : o.status === orderFilter);
       const matchQuery =
         !q ||
         o.invoiceCode.toLowerCase().includes(q) ||
@@ -518,27 +530,38 @@ export function AdminDashboard({
                                   </p>
                                 </td>
                                 <td className="px-4 py-3.5 text-right align-top font-mono font-semibold tabular-nums text-slate-900 dark:text-zinc-100">
-                                  {formatIDR(order.totalAmount)}
+                                  <p>{formatIDR(order.adminTransferAmount ?? order.totalAmount)}</p>
+                                  {order.adminBankName && (
+                                    <p className="mt-0.5 text-[11px] font-normal text-slate-500 dark:text-zinc-400">
+                                      {order.adminBankName} · {order.adminBankNumber}
+                                    </p>
+                                  )}
                                 </td>
                                 <td className="px-4 py-3.5 align-top">
                                   <span
                                     className={`inline-flex items-center gap-1 font-semibold whitespace-nowrap ${
                                       order.status === 'PAID'
                                         ? 'text-emerald-700 dark:text-emerald-400'
-                                        : order.status === 'PENDING'
-                                          ? 'text-amber-700 dark:text-amber-400'
-                                          : 'text-red-700 dark:text-red-400'
+                                        : order.status === 'CANCELLED'
+                                          ? 'text-red-700 dark:text-red-400'
+                                          : 'text-amber-700 dark:text-amber-400'
                                     }`}
                                   >
                                     {order.status === 'PAID' && <CheckCircle2 className="h-3.5 w-3.5" />}
-                                    {order.status === 'PENDING' && <Clock className="h-3.5 w-3.5" />}
+                                    {order.status !== 'PAID' && order.status !== 'CANCELLED' && (
+                                      <Clock className="h-3.5 w-3.5" />
+                                    )}
                                     {order.status === 'CANCELLED' && <XCircle className="h-3.5 w-3.5" />}
                                     <span>
                                       {order.status === 'PAID'
                                         ? 'Lunas'
-                                        : order.status === 'PENDING'
-                                          ? 'Menunggu'
-                                          : 'Dibatalkan'}
+                                        : order.status === 'AWAITING_BANK'
+                                          ? 'Tunggu Rekening'
+                                          : order.status === 'PAYMENT_SUBMITTED'
+                                            ? 'Cek Mutasi'
+                                            : order.status === 'PENDING'
+                                              ? 'Menunggu Transfer'
+                                              : 'Dibatalkan'}
                                     </span>
                                   </span>
                                 </td>
@@ -550,7 +573,9 @@ export function AdminDashboard({
                                 </td>
                                 <td className="px-4 py-3.5 text-right align-top">
                                   <div className="inline-flex items-center gap-1.5">
-                                    {order.status === 'PENDING' && (
+                                    {(order.status === 'PENDING' ||
+                                      order.status === 'AWAITING_BANK' ||
+                                      order.status === 'PAYMENT_SUBMITTED') && (
                                       <button
                                         type="button"
                                         disabled={busyActionId === order.id}
