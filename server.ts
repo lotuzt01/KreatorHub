@@ -31,6 +31,9 @@ import {
   notifyLowStockIfNeeded,
   syncOrderFromTelegram,
 } from './server/telegram.js';
+import healthHandler from './api/health.js';
+import telegramHandler from './api/telegram.js';
+import paymentHandler from './api/payment.js';
 
 const PORT = 3000;
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
@@ -140,6 +143,7 @@ function buildAdminOverview(): AdminOverviewPayload {
       mode: process.env.MIDTRANS_IS_PRODUCTION === 'true' ? 'production' : 'sandbox',
     },
     telegramLogs: db.telegramLogs,
+    mediaAssets: [],
     metrics: {
       totalRevenue: paidOrders.reduce((acc, o) => acc + o.totalAmount, 0),
       paidOrdersCount: paidOrders.length,
@@ -190,6 +194,33 @@ async function startServer() {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     next();
+  });
+
+  // Mount serverless-compatible endpoints directly on Express so dev & Node server serve live JSON
+  app.all('/api/health', (req, res) => {
+    healthHandler(req, res as unknown as Parameters<typeof healthHandler>[1]);
+  });
+
+  app.all('/api/telegram', async (req, res, next) => {
+    try {
+      await telegramHandler(
+        req as unknown as Parameters<typeof telegramHandler>[0],
+        res as unknown as Parameters<typeof telegramHandler>[1],
+      );
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.all('/api/payment', async (req, res, next) => {
+    try {
+      await paymentHandler(
+        req as unknown as Parameters<typeof paymentHandler>[0],
+        res as unknown as Parameters<typeof paymentHandler>[1],
+      );
+    } catch (err) {
+      next(err);
+    }
   });
 
   // Dynamic SEO sitemap.xml reflecting live products & canonical URL
@@ -1171,6 +1202,19 @@ async function startServer() {
       text,
     });
     res.json({ result, overview: buildAdminOverview() });
+  });
+
+  // Ensure unmatched /api/* routes return JSON 404 instead of falling through to SPA HTML
+  app.use('/api', (_req: Request, res: Response) => {
+    res.status(404).json({ error: 'Endpoint API tidak ditemukan.' });
+  });
+
+  // Ensure any unhandled /api/* errors return structured JSON rather than HTML
+  app.use('/api', (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const message = err instanceof Error ? err.message : 'Terjadi kesalahan pada server API.';
+    if (!res.headersSent) {
+      res.status(500).json({ error: message });
+    }
   });
 
   // Serve Vite in dev or built dist in production

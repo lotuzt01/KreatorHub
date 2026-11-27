@@ -59,6 +59,7 @@ export interface Product {
   fileSize: string;
   fileName: string;
   fileKey: string;
+  downloadUrl?: string; // Admin-only private download link stored in /productLinks/{productId}
   coverImage: string;
   status: 'active' | 'draft';
   featured: boolean;
@@ -73,6 +74,13 @@ export interface OrderItem {
   price: number;
   quantity: number;
   fileName: string;
+}
+
+export interface OrderDownloadLink {
+  productId: string;
+  title: string;
+  fileName: string;
+  url: string;
 }
 
 export interface Order {
@@ -96,8 +104,29 @@ export interface Order {
   adminBankHolder?: string;
   adminTransferAmount?: number;
   transferProofNote?: string;
+  downloadLinks?: OrderDownloadLink[];
+  deliveryNote?: string;
   createdAt: string;
   paidAt?: string;
+}
+
+export interface SocialLinks {
+  youtube: string;
+  tiktok: string;
+  instagram: string;
+  whatsapp: string;
+}
+
+export interface StoreUiTexts {
+  navCatalog: string;
+  navFeatures: string;
+  navCart: string;
+  catalogTitle: string;
+  catalogSubtitle: string;
+  featuresTitle: string;
+  featuresSubtitle: string;
+  buyButtonText: string;
+  detailButtonText: string;
 }
 
 export interface ThemeConfig {
@@ -113,6 +142,8 @@ export interface ThemeConfig {
   gridColumns: 2 | 3;
   contactEmail: string;
   footerNotice: string;
+  socialLinks?: SocialLinks;
+  uiTexts?: StoreUiTexts;
 }
 
 export interface SeoConfig {
@@ -176,6 +207,22 @@ export interface TelegramConnectionStatus {
   effectiveChatIdMasked: string | null;
 }
 
+export type MediaAssetCategory = 'product' | 'hero' | 'general';
+
+export interface MediaAsset {
+  id: string;
+  label: string;
+  category: MediaAssetCategory;
+  sourceType: 'upload' | 'url';
+  url: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  sizeBytes: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AdminOverviewPayload {
   products: Product[];
   orders: Order[];
@@ -183,6 +230,7 @@ export interface AdminOverviewPayload {
   telegramStatus: TelegramConnectionStatus;
   paymentStatus: PaymentGatewayStatus;
   telegramLogs: TelegramLog[];
+  mediaAssets: MediaAsset[];
   metrics: {
     totalRevenue: number;
     paidOrdersCount: number;

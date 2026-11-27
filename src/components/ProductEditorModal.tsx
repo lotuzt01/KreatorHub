@@ -1,14 +1,23 @@
 import { useState } from 'react';
-import { AlertCircle, Check, FileUp, Plus, Trash2, X } from 'lucide-react';
-import type { Product } from '../types/store';
+import { AlertCircle, Check, FileUp, Link2, Plus, RotateCcw, Trash2, Upload, X } from 'lucide-react';
+import type { MediaAsset, Product } from '../types/store';
 import { PRESET_PRODUCT_COVERS } from '../lib/format';
-import { saveFirestoreProduct } from '../lib/firestoreStore';
+import {
+  compressImageFileToDataUrl,
+  toAssetUri,
+} from '../lib/mediaAssets';
+import {
+  createFirestoreMediaAsset,
+  deleteFirestoreMediaAsset,
+  saveFirestoreProduct,
+} from '../lib/firestoreStore';
 import { SafeImage } from './SafeImage';
 
 interface ProductEditorModalProps {
   open: boolean;
   product: Product | null;
   categories: string[];
+  mediaAssets: MediaAsset[];
   onClose: () => void;
 }
 
@@ -16,6 +25,7 @@ export function ProductEditorModal({
   open,
   product,
   categories,
+  mediaAssets,
   onClose,
 }: ProductEditorModalProps) {
   const isEditing = Boolean(product);
@@ -44,10 +54,13 @@ export function ProductEditorModal({
   const [fileKey, setFileKey] = useState(product?.fileKey ?? '');
   const [fileName, setFileName] = useState(product?.fileName ?? '');
   const [fileSize, setFileSize] = useState(product?.fileSize ?? '');
+  const [downloadUrl, setDownloadUrl] = useState(product?.downloadUrl ?? '');
   const [status, setStatus] = useState<'active' | 'draft'>(product?.status ?? 'active');
   const [featured, setFeatured] = useState(product?.featured ?? false);
 
   const [saving, setSaving] = useState(false);
+  const [uploadingCover, setUploadingCover] = useState(false);
+  const [deletingAssetId, setDeletingAssetId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   if (!open) return null;
@@ -57,6 +70,50 @@ export function ProductEditorModal({
     setFileKey(`cloud-${Date.now()}`);
     setFileName(file.name);
     setFileSize(`${Math.max(1, Math.round(file.size / 1024))} KB`);
+  };
+
+  const handleUploadCoverImage = async (file: File | undefined) => {
+    if (!file) return;
+    setError(null);
+    setUploadingCover(true);
+    try {
+      const compressed = await compressImageFileToDataUrl(file);
+      const cleanName =
+        title.trim() ||
+        file.name.replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ').trim() ||
+        'Sampul Produk';
+      const created = await createFirestoreMediaAsset({
+        label: cleanName.slice(0, 120),
+        category: 'product',
+        sourceType: 'upload',
+        url: compressed.dataUrl,
+        mimeType: compressed.mimeType,
+        width: compressed.width,
+        height: compressed.height,
+        sizeBytes: compressed.sizeBytes,
+      });
+      setCoverImage(toAssetUri(created.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal mengunggah gambar sampul.');
+    } finally {
+      setUploadingCover(false);
+    }
+  };
+
+  const handleQuickDeleteAsset = async (asset: MediaAsset) => {
+    setError(null);
+    setDeletingAssetId(asset.id);
+    try {
+      const uri = toAssetUri(asset.id);
+      await deleteFirestoreMediaAsset(asset.id);
+      if (coverImage === uri || coverImage === asset.url) {
+        setCoverImage(PRESET_PRODUCT_COVERS[0].path);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal menghapus aset gambar.');
+    } finally {
+      setDeletingAssetId(null);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -72,6 +129,24 @@ export function ProductEditorModal({
     if (!Number.isFinite(numericPrice) || numericPrice < 0) {
       setError('Masukkan harga produk yang valid.');
       return;
+    }
+
+    const trimmedDownloadUrl = downloadUrl.trim();
+    if (trimmedDownloadUrl) {
+      const hasValidProtocol =
+        trimmedDownloadUrl.startsWith('https://') || trimmedDownloadUrl.startsWith('http://');
+      if (!hasValidProtocol || trimmedDownloadUrl.length > 600) {
+        setError(
+          'Link download produk harus diawali https:// atau http:// dan maksimal 600 karakter.',
+        );
+        return;
+      }
+      try {
+        new URL(trimmedDownloadUrl);
+      } catch {
+        setError('Format link download produk tidak valid. Periksa kembali alamat tautan Anda.');
+        return;
+      }
     }
 
     setSaving(true);
@@ -92,6 +167,7 @@ export function ProductEditorModal({
         fileKey,
         fileName,
         fileSize,
+        downloadUrl: trimmedDownloadUrl,
         status,
         featured,
       });
@@ -296,81 +372,203 @@ export function ProductEditorModal({
             </div>
           </div>
 
-          {/* Digital File Metadata */}
-          <div className="border-t border-slate-200 pt-5 dark:border-zinc-800">
-            <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300">
-              Info File Produk Digital (Diunduh Pembeli Setelah Lunas)
-            </label>
-            <div className="mt-2 flex flex-col gap-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-zinc-700 dark:bg-zinc-950">
-              <div className="min-w-0">
-                {fileName ? (
-                  <p className="flex items-center gap-2 text-sm font-medium text-slate-900 dark:text-zinc-100">
-                    <Check className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
-                    <span className="truncate">{fileName}</span>
-                    {fileSize && (
-                      <span className="font-mono text-xs text-slate-500 dark:text-zinc-400">
-                        ({fileSize})
-                      </span>
-                    )}
-                  </p>
-                ) : (
-                  <p className="text-xs text-slate-500 dark:text-zinc-400">
-                    Pilih file lokal untuk mencatat nama &amp; ukuran file (ZIP, PDF, FIG, JSON, DOCX, XLSX).
-                  </p>
-                )}
-              </div>
-              <label className="inline-flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 text-xs font-semibold text-slate-800 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800">
-                <FileUp className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Pilih File</span>
-                <input
-                  type="file"
-                  className="hidden"
-                  onChange={(e) => {
-                    const selected = e.target.files?.[0];
-                    if (selected) handleSelectFile(selected);
-                  }}
-                />
+          {/* Digital File Metadata & Private Download Link */}
+          <div className="space-y-4 border-t border-slate-200 pt-5 dark:border-zinc-800">
+            <div>
+              <label
+                htmlFor="product-download-url"
+                className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-zinc-300"
+              >
+                <Link2 className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" aria-hidden="true" />
+                <span>Link Download Aplikasi / Produk (Diberikan Setelah Transaksi Sukses)</span>
               </label>
+              <input
+                id="product-download-url"
+                type="url"
+                maxLength={600}
+                value={downloadUrl}
+                onChange={(e) => setDownloadUrl(e.target.value)}
+                placeholder="https://drive.google.com/... atau link APK / MediaFire / GitHub"
+                className="mt-1.5 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 font-mono text-xs text-slate-900 placeholder:font-sans placeholder:text-slate-400 focus:border-blue-600 focus:outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+              />
+              <p className="mt-1.5 text-[11px] leading-relaxed text-slate-500 dark:text-zinc-400">
+                Disimpan privat khusus Admin dan tidak terlihat di halaman katalog publik. Tautan ini otomatis terbuka di layar pembeli &amp; dikirim via Telegram hanya setelah pembayaran diverifikasi Lunas.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300">
+                Info Nama &amp; Ukuran File (Opsional)
+              </label>
+              <div className="mt-2 flex flex-col gap-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-zinc-700 dark:bg-zinc-950">
+                <div className="min-w-0">
+                  {fileName ? (
+                    <p className="flex items-center gap-2 text-sm font-medium text-slate-900 dark:text-zinc-100">
+                      <Check className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+                      <span className="truncate">{fileName}</span>
+                      {fileSize && (
+                        <span className="font-mono text-xs text-slate-500 dark:text-zinc-400">
+                          ({fileSize})
+                        </span>
+                      )}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-slate-500 dark:text-zinc-400">
+                      Pilih file lokal untuk mencatat label nama &amp; ukuran file (APK, ZIP, PDF, FIG, dsb.).
+                    </p>
+                  )}
+                </div>
+                <label className="inline-flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 text-xs font-semibold text-slate-800 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800">
+                  <FileUp className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Pilih File</span>
+                  <input
+                    type="file"
+                    className="hidden"
+                    onChange={(e) => {
+                      const selected = e.target.files?.[0];
+                      if (selected) handleSelectFile(selected);
+                    }}
+                  />
+                </label>
+              </div>
             </div>
           </div>
 
-          {/* Cover Image Presets & URL */}
-          <div className="border-t border-slate-200 pt-5 dark:border-zinc-800">
-            <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300">
-              Sampul Produk (Pilih Preset Studio atau Masukkan URL HTTPS)
-            </label>
-            <input
-              type="text"
-              value={coverImage}
-              onChange={(e) => setCoverImage(e.target.value)}
-              placeholder="https://... atau pilih preset di bawah"
-              className="mt-2 h-9 w-full rounded-lg border border-slate-300 bg-white px-3 font-mono text-xs text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-            />
+          {/* Cover Image Upload, Gallery Assets, Presets & URL */}
+          <div className="space-y-4 border-t border-slate-200 pt-5 dark:border-zinc-800">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300">
+                Sampul Produk (Unggah dari HP/Komputer, Pilih Galeri, atau URL HTTPS)
+              </label>
+              <div className="flex items-center gap-2">
+                <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 text-xs font-semibold text-blue-700 hover:bg-blue-100 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300">
+                  <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>{uploadingCover ? 'Mengunggah...' : 'Unggah Foto'}</span>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/*"
+                    disabled={uploadingCover}
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      e.target.value = '';
+                      void handleUploadCoverImage(f);
+                    }}
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setCoverImage(PRESET_PRODUCT_COVERS[0].path)}
+                  className="inline-flex h-8 cursor-pointer items-center gap-1 rounded-lg border border-slate-200 px-2.5 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                >
+                  <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                  <span>Reset</span>
+                </button>
+              </div>
+            </div>
 
-            <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
-              {PRESET_PRODUCT_COVERS.map((preset) => {
-                const selected = coverImage === preset.path;
-                return (
-                  <button
-                    key={preset.path}
-                    type="button"
-                    onClick={() => setCoverImage(preset.path)}
-                    className={`overflow-hidden rounded-lg border text-left transition-all ${
-                      selected
-                        ? 'border-blue-600 ring-2 ring-blue-600/30'
-                        : 'border-slate-200 opacity-80 hover:opacity-100 dark:border-zinc-800'
-                    }`}
-                  >
-                    <div className="aspect-4/3 bg-slate-100 dark:bg-zinc-950">
-                      <SafeImage
-                        src={preset.path}
-                        alt={preset.label}
-                        className="h-full w-full object-cover"
-                      />
-                    </div>
-                  </button>
-                );
-              })}
+            {/* Active Cover Preview + URL input */}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <div className="aspect-4/3 w-32 shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-slate-100 dark:border-zinc-800 dark:bg-zinc-950">
+                <SafeImage
+                  src={coverImage}
+                  alt={title || 'Pratinjau sampul'}
+                  className="h-full w-full object-cover"
+                />
+              </div>
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <input
+                  type="text"
+                  value={coverImage}
+                  onChange={(e) => setCoverImage(e.target.value)}
+                  placeholder="https://... atau unggah foto dari perangkat"
+                  className="h-9 w-full rounded-lg border border-slate-300 bg-white px-3 font-mono text-xs text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                />
+                <p className="text-[11px] text-slate-500 dark:text-zinc-400">
+                  Foto yang diunggah otomatis dikompresi &amp; tersimpan di tab Galeri Aset agar bisa dipakai ulang kapan saja.
+                </p>
+              </div>
+            </div>
+
+            {/* Custom Uploaded Gallery Assets */}
+            {mediaAssets.length > 0 && (
+              <div>
+                <p className="text-[11px] font-semibold text-slate-600 dark:text-zinc-400">
+                  Aset Galeri Anda ({mediaAssets.length})
+                </p>
+                <div className="mt-2 grid grid-cols-3 gap-2.5 sm:grid-cols-5">
+                  {mediaAssets.map((asset) => {
+                    const uri = toAssetUri(asset.id);
+                    const selected = coverImage === uri || coverImage === asset.url;
+                    return (
+                      <div
+                        key={asset.id}
+                        className={`group relative overflow-hidden rounded-lg border transition-all ${
+                          selected
+                            ? 'border-blue-600 ring-2 ring-blue-600/30'
+                            : 'border-slate-200 opacity-85 hover:opacity-100 dark:border-zinc-800'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setCoverImage(uri)}
+                          className="block w-full cursor-pointer text-left"
+                        >
+                          <div className="aspect-4/3 bg-slate-100 dark:bg-zinc-950">
+                            <SafeImage
+                              src={uri}
+                              alt={asset.label}
+                              className="h-full w-full object-cover"
+                            />
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={deletingAssetId === asset.id}
+                          onClick={() => void handleQuickDeleteAsset(asset)}
+                          aria-label={`Hapus aset ${asset.label}`}
+                          title="Hapus aset dari galeri"
+                          className="absolute top-1 right-1 inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded bg-slate-950/75 text-white opacity-90 hover:bg-red-600"
+                        >
+                          <Trash2 className="h-3 w-3" aria-hidden="true" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Built-in Studio Presets */}
+            <div>
+              <p className="text-[11px] font-semibold text-slate-600 dark:text-zinc-400">
+                Preset Bawaan Studio
+              </p>
+              <div className="mt-2 grid grid-cols-3 gap-2.5 sm:grid-cols-5">
+                {PRESET_PRODUCT_COVERS.map((preset) => {
+                  const selected = coverImage === preset.path;
+                  return (
+                    <button
+                      key={preset.path}
+                      type="button"
+                      onClick={() => setCoverImage(preset.path)}
+                      className={`cursor-pointer overflow-hidden rounded-lg border text-left transition-all ${
+                        selected
+                          ? 'border-blue-600 ring-2 ring-blue-600/30'
+                          : 'border-slate-200 opacity-80 hover:opacity-100 dark:border-zinc-800'
+                      }`}
+                    >
+                      <div className="aspect-4/3 bg-slate-100 dark:bg-zinc-950">
+                        <SafeImage
+                          src={preset.path}
+                          alt={preset.label}
+                          className="h-full w-full object-cover"
+                        />
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
 

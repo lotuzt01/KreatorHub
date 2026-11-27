@@ -102,3 +102,21 @@ export async function verifyAdminAccess(user: User | null): Promise<boolean> {
     return false;
   }
 }
+
+export async function getAdminFirebaseIdToken(): Promise<string | null> {
+  const user = auth.currentUser;
+  if (!user) return null;
+  try {
+    const idToken = await user.getIdToken();
+    return idToken || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getAdminAuthHeaders(): Promise<Record<string, string>> {
+  return {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+}

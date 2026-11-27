@@ -6,6 +6,7 @@ import {
   CreditCard,
   Edit3,
   Globe,
+  Image as ImageIcon,
   LogOut,
   Minus,
   Moon,
@@ -32,10 +33,13 @@ import {
   deleteFirestoreProduct,
   subscribeAdminOverview,
 } from '../lib/firestoreStore';
+import { getAdminAuthHeaders, getAdminFirebaseIdToken } from '../lib/firebase';
+import { fetchJsonWithWarmupRetry } from '../lib/apiClient';
 import { ProductEditorModal } from './ProductEditorModal';
 import { OrderVerificationModal } from './OrderVerificationModal';
 import { ThemeEditorPanel } from './ThemeEditorPanel';
 import { PaymentSettingsPanel } from './PaymentSettingsPanel';
+import { MediaGalleryPanel } from './MediaGalleryPanel';
 import { DeploySeoPanel, TelegramSettingsPanel } from './TelegramDeployPanels';
 import { SafeImage } from './SafeImage';
 
@@ -55,7 +59,7 @@ export interface ServerlessHealthInfo {
   } | null;
 }
 
-type AdminTab = 'orders' | 'products' | 'payment' | 'theme' | 'telegram' | 'deploy';
+type AdminTab = 'orders' | 'products' | 'media' | 'payment' | 'theme' | 'telegram' | 'deploy';
 
 interface AdminDashboardProps {
   adminEmail: string;
@@ -69,6 +73,7 @@ interface AdminDashboardProps {
 const TAB_ITEMS: Array<{ id: AdminTab; label: string; icon: typeof ShoppingCart }> = [
   { id: 'orders', label: 'Ringkasan & Pesanan', icon: ShoppingCart },
   { id: 'products', label: 'Produk & Stok', icon: Package },
+  { id: 'media', label: 'Galeri Aset', icon: ImageIcon },
   { id: 'payment', label: 'Pembayaran', icon: CreditCard },
   { id: 'theme', label: 'Editor Tampilan', icon: Palette },
   { id: 'telegram', label: 'Bot Telegram', icon: Send },
@@ -163,18 +168,34 @@ export function AdminDashboard({
             ? 'transfer_submitted'
             : 'order_created';
       const origin = window.location.origin;
+      const productMap = new Map(overview.products.map((p) => [p.id, p]));
       const downloadLinks =
         event === 'order_paid'
-          ? order.items.map((item) => ({
-              title: item.title,
-              fileName: item.fileName,
-              url: `${origin}/?invoice=${encodeURIComponent(order.invoiceCode)}&produk=${encodeURIComponent(item.productId)}`,
-            }))
+          ? order.items.map((item) => {
+              const savedLink = order.downloadLinks?.find((l) => l.productId === item.productId)?.url;
+              const productLink = productMap.get(item.productId)?.downloadUrl?.trim();
+              return {
+                title: item.title,
+                fileName: item.fileName,
+                url:
+                  savedLink ||
+                  productLink ||
+                  `${origin}/?invoice=${encodeURIComponent(order.invoiceCode)}&produk=${encodeURIComponent(item.productId)}`,
+              };
+            })
           : undefined;
 
-      const res = await fetch('/api/telegram', {
+      const [headers, firebaseIdToken] = await Promise.all([
+        getAdminAuthHeaders(),
+        getAdminFirebaseIdToken(),
+      ]);
+      const { data } = await fetchJsonWithWarmupRetry<{
+        status?: 'sent' | 'not_configured' | 'failed';
+        detail?: string;
+        preview?: string;
+      }>('/api/telegram', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           event,
           storeName: overview.settings.theme.storeName,
@@ -194,11 +215,9 @@ export function AdminDashboard({
           downloadLinks,
           chatIdOverride: overview.settings.telegram.customChatIdOverride || undefined,
           messageHeader: overview.settings.telegram.messageHeader,
+          firebaseIdToken: firebaseIdToken || undefined,
         }),
       });
-      const data = (await res.json().catch(() => null)) as
-        | { status?: 'sent' | 'not_configured' | 'failed'; detail?: string; preview?: string }
-        | null;
 
       if (data?.status) {
         await appendFirestoreTelegramLog({
@@ -722,6 +741,11 @@ export function AdminDashboard({
                                 <p className="mt-0.5 max-w-[180px] truncate font-mono text-[11px] text-slate-500 dark:text-zinc-400">
                                   {product.fileName} · {product.fileSize}
                                 </p>
+                                {product.downloadUrl && (
+                                  <p className="mt-0.5 max-w-[200px] truncate text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+                                    Link download aktif
+                                  </p>
+                                )}
                               </td>
                               <td className="px-4 py-3.5 text-right font-mono font-semibold tabular-nums text-slate-900 dark:text-zinc-100">
                                 {formatIDR(product.price)}
@@ -799,6 +823,15 @@ export function AdminDashboard({
                 </div>
               )}
 
+              {/* TAB 2B: MEDIA ASSET GALLERY */}
+              {activeTab === 'media' && (
+                <MediaGalleryPanel
+                  mediaAssets={overview.mediaAssets}
+                  products={overview.products}
+                  theme={overview.settings.theme}
+                />
+              )}
+
               {/* TAB 3: PAYMENT SETTINGS */}
               {activeTab === 'payment' && (
                 <PaymentSettingsPanel
@@ -813,6 +846,7 @@ export function AdminDashboard({
                 <ThemeEditorPanel
                   theme={overview.settings.theme}
                   seo={overview.settings.seo}
+                  mediaAssets={overview.mediaAssets}
                 />
               )}
 
@@ -846,6 +880,7 @@ export function AdminDashboard({
           open={editorOpen}
           product={editingProduct}
           categories={overview.settings.categories}
+          mediaAssets={overview.mediaAssets}
           onClose={() => {
             setEditorOpen(false);
             setEditingProduct(null);
@@ -857,6 +892,7 @@ export function AdminDashboard({
       {overview && liveVerifyingOrder && (
         <OrderVerificationModal
           order={liveVerifyingOrder}
+          products={overview.products}
           storeName={overview.settings.theme.storeName}
           telegramPrefs={overview.settings.telegram}
           serverlessAvailable={Boolean(serverlessHealth?.ok)}

@@ -32,7 +32,9 @@ service cloud.firestore {
 
     // Zero-DB-read bootstrapped admin check (safe inside allow list)
     function isBootstrappedAdmin() {
-      return isVerifiedUser() && request.auth.token.email == 'nomigosone@gmail.com';
+      return isVerifiedUser() &&
+        request.auth.token.email is string &&
+        request.auth.token.email == 'nomigosone@gmail.com';
     }
 
     // Full RBAC admin check (bootstrapped admin OR trusted /admins/{uid} document)
@@ -71,6 +73,87 @@ service cloud.firestore {
         'PAID',
         'CANCELLED'
       ];
+    }
+
+    function isValidSocialLinks(sl) {
+      return sl is map &&
+        sl.keys().hasOnly(['youtube', 'tiktok', 'instagram', 'whatsapp']) &&
+        sl.size() == 4 &&
+        sl.youtube is string && sl.youtube.size() <= 300 &&
+        sl.tiktok is string && sl.tiktok.size() <= 300 &&
+        sl.instagram is string && sl.instagram.size() <= 300 &&
+        sl.whatsapp is string && sl.whatsapp.size() <= 300;
+    }
+
+    function isValidUiTexts(u) {
+      return u is map &&
+        u.keys().hasOnly([
+          'navCatalog', 'navFeatures', 'navCart',
+          'catalogTitle', 'catalogSubtitle',
+          'featuresTitle', 'featuresSubtitle',
+          'buyButtonText', 'detailButtonText'
+        ]) &&
+        u.size() == 9 &&
+        u.navCatalog is string && u.navCatalog.size() <= 40 &&
+        u.navFeatures is string && u.navFeatures.size() <= 40 &&
+        u.navCart is string && u.navCart.size() <= 40 &&
+        u.catalogTitle is string && u.catalogTitle.size() <= 120 &&
+        u.catalogSubtitle is string && u.catalogSubtitle.size() <= 300 &&
+        u.featuresTitle is string && u.featuresTitle.size() <= 180 &&
+        u.featuresSubtitle is string && u.featuresSubtitle.size() <= 360 &&
+        u.buyButtonText is string && u.buyButtonText.size() <= 30 &&
+        u.detailButtonText is string && u.detailButtonText.size() <= 30;
+    }
+
+    function isValidTheme(t) {
+      return t is map &&
+        t.keys().hasOnly([
+          'storeName', 'heroEyebrow', 'heroHeadline', 'heroSubheadline', 'heroCtaText',
+          'heroImage', 'accentColor', 'defaultMode', 'cornerStyle', 'gridColumns',
+          'contactEmail', 'footerNotice', 'socialLinks', 'uiTexts'
+        ]) &&
+        t.storeName is string && t.storeName.size() >= 1 && t.storeName.size() <= 100 &&
+        t.heroEyebrow is string && t.heroEyebrow.size() <= 120 &&
+        t.heroHeadline is string && t.heroHeadline.size() <= 240 &&
+        t.heroSubheadline is string && t.heroSubheadline.size() <= 600 &&
+        t.heroCtaText is string && t.heroCtaText.size() <= 60 &&
+        t.heroImage is string && t.heroImage.size() <= 500 &&
+        t.accentColor is string && t.accentColor.size() <= 20 &&
+        t.defaultMode in ['light', 'dark'] &&
+        t.cornerStyle in ['sharp', 'modern', 'soft'] &&
+        t.gridColumns in [2, 3] &&
+        t.contactEmail is string && t.contactEmail.size() <= 160 &&
+        t.footerNotice is string && t.footerNotice.size() <= 300 &&
+        (!('socialLinks' in t) || isValidSocialLinks(t.socialLinks)) &&
+        (!('uiTexts' in t) || isValidUiTexts(t.uiTexts));
+    }
+
+    function isValidSeo(s) {
+      return s is map &&
+        s.keys().hasOnly(['metaTitle', 'metaDescription', 'keywords', 'canonicalUrl', 'ogSiteName']) &&
+        s.size() == 5 &&
+        s.metaTitle is string && s.metaTitle.size() <= 160 &&
+        s.metaDescription is string && s.metaDescription.size() <= 400 &&
+        s.keywords is string && s.keywords.size() <= 400 &&
+        s.canonicalUrl is string && s.canonicalUrl.size() <= 300 &&
+        s.ogSiteName is string && s.ogSiteName.size() <= 100;
+    }
+
+    function isValidPayment(p) {
+      return p is map &&
+        p.keys().hasOnly([
+          'provider', 'merchantName', 'qrisMerchantId', 'qrisImageUrl',
+          'expiryMinutes', 'autoConfirmDemo', 'methods'
+        ]) &&
+        p.size() == 7 &&
+        p.provider in ['builtin_auto', 'midtrans', 'tripay', 'xendit'] &&
+        p.merchantName is string && p.merchantName.size() >= 1 && p.merchantName.size() <= 120 &&
+        p.qrisMerchantId is string && p.qrisMerchantId.size() <= 80 &&
+        p.qrisImageUrl is string && p.qrisImageUrl.size() <= 500 &&
+        p.expiryMinutes is number && p.expiryMinutes >= 5 && p.expiryMinutes <= 1440 &&
+        p.autoConfirmDemo is bool &&
+        p.methods is list && p.methods.size() >= 1 && p.methods.size() <= 10 &&
+        p.methods[0] is map;
     }
 
     // =========================================================================
@@ -113,57 +196,24 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function isValidProductLink(data, productId) {
+      return data.keys().hasAll(['productId', 'downloadUrl', 'updatedAt']) &&
+        data.keys().hasOnly(['productId', 'downloadUrl', 'updatedAt']) &&
+        data.productId is string && data.productId == productId && isValidId(data.productId) &&
+        data.downloadUrl is string && data.downloadUrl.size() <= 600 &&
+        (data.downloadUrl.size() == 0 || (
+          data.downloadUrl.size() >= 8 &&
+          (data.downloadUrl[0:8] == 'https://' || data.downloadUrl[0:7] == 'http://')
+        )) &&
+        data.updatedAt is timestamp;
+    }
+
     function isValidPublicSettings(data) {
       return data.keys().hasAll(['theme', 'seo', 'payment', 'categories', 'updatedAt']) &&
         data.keys().hasOnly(['theme', 'seo', 'payment', 'categories', 'updatedAt']) &&
-        data.theme is map &&
-        data.theme.keys().hasAll([
-          'storeName', 'heroEyebrow', 'heroHeadline', 'heroSubheadline', 'heroCtaText',
-          'heroImage', 'accentColor', 'defaultMode', 'cornerStyle', 'gridColumns',
-          'contactEmail', 'footerNotice'
-        ]) &&
-        data.theme.keys().hasOnly([
-          'storeName', 'heroEyebrow', 'heroHeadline', 'heroSubheadline', 'heroCtaText',
-          'heroImage', 'accentColor', 'defaultMode', 'cornerStyle', 'gridColumns',
-          'contactEmail', 'footerNotice'
-        ]) &&
-        data.theme.storeName is string && data.theme.storeName.size() >= 1 && data.theme.storeName.size() <= 100 &&
-        data.theme.heroEyebrow is string && data.theme.heroEyebrow.size() <= 120 &&
-        data.theme.heroHeadline is string && data.theme.heroHeadline.size() <= 240 &&
-        data.theme.heroSubheadline is string && data.theme.heroSubheadline.size() <= 600 &&
-        data.theme.heroCtaText is string && data.theme.heroCtaText.size() <= 60 &&
-        data.theme.heroImage is string && data.theme.heroImage.size() <= 500 &&
-        data.theme.accentColor is string && data.theme.accentColor.size() <= 20 &&
-        data.theme.defaultMode in ['light', 'dark'] &&
-        data.theme.cornerStyle in ['sharp', 'modern', 'soft'] &&
-        data.theme.gridColumns in [2, 3] &&
-        data.theme.contactEmail is string && data.theme.contactEmail.size() <= 160 &&
-        data.theme.footerNotice is string && data.theme.footerNotice.size() <= 300 &&
-        data.seo is map &&
-        data.seo.keys().hasAll(['metaTitle', 'metaDescription', 'keywords', 'canonicalUrl', 'ogSiteName']) &&
-        data.seo.keys().hasOnly(['metaTitle', 'metaDescription', 'keywords', 'canonicalUrl', 'ogSiteName']) &&
-        data.seo.metaTitle is string && data.seo.metaTitle.size() <= 160 &&
-        data.seo.metaDescription is string && data.seo.metaDescription.size() <= 400 &&
-        data.seo.keywords is string && data.seo.keywords.size() <= 400 &&
-        data.seo.canonicalUrl is string && data.seo.canonicalUrl.size() <= 300 &&
-        data.seo.ogSiteName is string && data.seo.ogSiteName.size() <= 100 &&
-        data.payment is map &&
-        data.payment.keys().hasAll([
-          'provider', 'merchantName', 'qrisMerchantId', 'qrisImageUrl',
-          'expiryMinutes', 'autoConfirmDemo', 'methods'
-        ]) &&
-        data.payment.keys().hasOnly([
-          'provider', 'merchantName', 'qrisMerchantId', 'qrisImageUrl',
-          'expiryMinutes', 'autoConfirmDemo', 'methods'
-        ]) &&
-        data.payment.provider in ['builtin_auto', 'midtrans', 'tripay', 'xendit'] &&
-        data.payment.merchantName is string && data.payment.merchantName.size() >= 1 && data.payment.merchantName.size() <= 120 &&
-        data.payment.qrisMerchantId is string && data.payment.qrisMerchantId.size() <= 80 &&
-        data.payment.qrisImageUrl is string && data.payment.qrisImageUrl.size() <= 500 &&
-        data.payment.expiryMinutes is number && data.payment.expiryMinutes >= 5 && data.payment.expiryMinutes <= 1440 &&
-        data.payment.autoConfirmDemo is bool &&
-        data.payment.methods is list && data.payment.methods.size() >= 1 && data.payment.methods.size() <= 10 &&
-        data.payment.methods[0] is map &&
+        isValidTheme(data.theme) &&
+        isValidSeo(data.seo) &&
+        isValidPayment(data.payment) &&
         data.categories is list && data.categories.size() >= 1 && data.categories.size() <= 30 &&
         data.categories[0] is string && data.categories[0].size() <= 80 &&
         data.updatedAt is timestamp;
@@ -201,6 +251,7 @@ service cloud.firestore {
           'telegramMessage', 'telegramOrderMessageId', 'telegramTransferMessageId',
           'adminBankName', 'adminBankNumber', 'adminBankHolder', 'adminTransferAmount',
           'transferProofNote', 'bankSyncSecret', 'transferSyncSecret',
+          'downloadLinks', 'deliveryNote',
           'createdAt', 'updatedAt', 'paidAt'
         ]) &&
         data.id is string && data.id == orderId && isValidId(data.id) &&
@@ -227,6 +278,11 @@ service cloud.firestore {
         isOptionalString(data, 'transferProofNote', 200) &&
         isOptionalString(data, 'bankSyncSecret', 128) &&
         isOptionalString(data, 'transferSyncSecret', 128) &&
+        (!('downloadLinks' in data) || (
+          data.downloadLinks is list && data.downloadLinks.size() <= 20 &&
+          (data.downloadLinks.size() == 0 || data.downloadLinks[0] is map)
+        )) &&
+        isOptionalString(data, 'deliveryNote', 300) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp &&
         (!('paidAt' in data) || data.paidAt is timestamp);
@@ -241,6 +297,7 @@ service cloud.firestore {
           'orderId', 'invoiceCode', 'paymentMethod', 'status',
           'totalAmount', 'adminBankName', 'adminBankNumber', 'adminBankHolder',
           'adminTransferAmount', 'transferProofNote', 'downloadReady',
+          'downloadLinks', 'deliveryNote',
           'createdAt', 'updatedAt'
         ]) &&
         data.orderId is string && data.orderId == orderId && isValidId(data.orderId) &&
@@ -254,6 +311,11 @@ service cloud.firestore {
         isOptionalNumber(data, 'adminTransferAmount', 0) &&
         isOptionalString(data, 'transferProofNote', 200) &&
         data.downloadReady is bool &&
+        (!('downloadLinks' in data) || (
+          data.downloadLinks is list && data.downloadLinks.size() <= 20 &&
+          (data.downloadLinks.size() == 0 || data.downloadLinks[0] is map)
+        )) &&
+        isOptionalString(data, 'deliveryNote', 300) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -279,11 +341,53 @@ service cloud.firestore {
         data.createdAt is timestamp;
     }
 
+    function isSafeMediaUrl(url, sourceType) {
+      return url is string && (
+        (
+          sourceType == 'url' &&
+          url.size() >= 8 &&
+          url.size() <= 500 &&
+          url[0:8] == 'https://'
+        ) || (
+          sourceType == 'upload' &&
+          url.size() >= 24 &&
+          url.size() <= 280000 &&
+          (
+            url[0:23] == 'data:image/jpeg;base64,' ||
+            url[0:23] == 'data:image/webp;base64,' ||
+            url[0:22] == 'data:image/png;base64,'
+          )
+        )
+      );
+    }
+
+    function isValidMediaAsset(data, assetId) {
+      return data.keys().hasAll([
+          'id', 'label', 'category', 'sourceType', 'url', 'mimeType',
+          'width', 'height', 'sizeBytes', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'label', 'category', 'sourceType', 'url', 'mimeType',
+          'width', 'height', 'sizeBytes', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == assetId && isValidId(data.id) &&
+        data.label is string && data.label.size() >= 1 && data.label.size() <= 120 &&
+        data.category in ['product', 'hero', 'general'] &&
+        data.sourceType in ['upload', 'url'] &&
+        isSafeMediaUrl(data.url, data.sourceType) &&
+        data.mimeType is string && data.mimeType.size() >= 3 && data.mimeType.size() <= 40 &&
+        data.width is number && data.width >= 0 && data.width <= 4096 &&
+        data.height is number && data.height >= 0 && data.height <= 4096 &&
+        data.sizeBytes is number && data.sizeBytes >= 0 && data.sizeBytes <= 280000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
     // =========================================================================
     // Collection Rules (Denial-of-Wallet Order: Auth -> Static -> Relational)
     // =========================================================================
 
-    // 1. Products Catalog
+    // 1. Products Catalog (Public active catalog; no private download URLs)
     match /products/{productId} {
       allow get: if isValidId(productId) && (existing().status == 'active' || isAdmin());
       allow list: if existing().status == 'active' || isBootstrappedAdmin();
@@ -300,6 +404,27 @@ service cloud.firestore {
         isValidProduct(incoming(), productId) &&
         incoming().id == existing().id &&
         incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow delete: if isVerifiedUser() && isValidId(productId) && isAdmin();
+    }
+
+    // 1B. Private Product Download Links (Strictly Admin-Only — Never Publicly Readable)
+    match /productLinks/{productId} {
+      allow get: if isVerifiedUser() && isValidId(productId) && isAdmin();
+      allow list: if isBootstrappedAdmin();
+
+      allow create: if isVerifiedUser() &&
+        isValidId(productId) &&
+        isValidProductLink(incoming(), productId) &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(productId) &&
+        isValidProductLink(incoming(), productId) &&
+        incoming().productId == existing().productId &&
         incoming().updatedAt == request.time &&
         isAdmin();
 
@@ -362,6 +487,8 @@ service cloud.firestore {
         !('paidAt' in incoming()) &&
         !('bankSyncSecret' in incoming()) &&
         !('transferSyncSecret' in incoming()) &&
+        !('downloadLinks' in incoming()) &&
+        !('deliveryNote' in incoming()) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
         existsAfter(/databases/$(database)/documents/orderStatuses/$(orderId)) &&
@@ -376,7 +503,7 @@ service cloud.firestore {
         incoming().buyerSecret == existing().buyerSecret &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
-          // Tier 1: Admin full order management (send bank details, verify PAID, cancel, resend Telegram)
+          // Tier 1: Admin full order management (send bank details, verify PAID + unlock downloadLinks, cancel, resend Telegram)
           (isVerifiedUser() && isAdmin()) ||
           // Tier 2A: Buyer holding exact buyerSecret syncs bank instructions received from Telegram (AWAITING_BANK -> PENDING)
           (
@@ -420,6 +547,8 @@ service cloud.firestore {
         isValidOrderStatusDoc(incoming(), orderId) &&
         incoming().status in ['AWAITING_BANK', 'PENDING'] &&
         incoming().downloadReady == false &&
+        !('downloadLinks' in incoming()) &&
+        !('deliveryNote' in incoming()) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
         existsAfter(/databases/$(database)/documents/orders/$(orderId));
@@ -430,7 +559,7 @@ service cloud.firestore {
         incoming().invoiceCode == existing().invoiceCode &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
-          // Tier 1: Admin updates status (including PAID & downloadReady: true)
+          // Tier 1: Admin updates status (including PAID, downloadReady: true, downloadLinks, deliveryNote)
           (isVerifiedUser() && isAdmin()) ||
           // Tier 2A: Synchronized atomically with parent /orders/{orderId} verified by bankSyncSecret
           (
@@ -491,6 +620,29 @@ service cloud.firestore {
         isBootstrappedAdmin();
 
       allow delete: if isVerifiedUser() && isValidId(uid) && isBootstrappedAdmin();
+    }
+
+    // 8. Media Assets Gallery (Public single-doc get by exact assetId; Admin-only list & CRUD)
+    match /mediaAssets/{assetId} {
+      allow get: if isValidId(assetId);
+      allow list: if isBootstrappedAdmin();
+
+      allow create: if isVerifiedUser() &&
+        isValidId(assetId) &&
+        isValidMediaAsset(incoming(), assetId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(assetId) &&
+        isValidMediaAsset(incoming(), assetId) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow delete: if isVerifiedUser() && isValidId(assetId) && isAdmin();
     }
   }
 }

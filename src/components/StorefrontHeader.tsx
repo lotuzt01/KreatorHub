@@ -1,24 +1,29 @@
 import { useState } from 'react';
 import { Menu, ShoppingBag, X } from 'lucide-react';
+import type { StoreUiTexts } from '../types/store';
 
 interface StorefrontHeaderProps {
   storeName: string;
+  uiTexts?: StoreUiTexts;
   cartCount: number;
   isDark: boolean;
   onToggleTheme: () => void;
   onOpenCart: () => void;
-  onOpenAdmin: () => void;
 }
 
 export function StorefrontHeader({
   storeName,
+  uiTexts,
   cartCount,
   isDark,
   onToggleTheme,
   onOpenCart,
-  onOpenAdmin,
 }: StorefrontHeaderProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  const navCatalog = uiTexts?.navCatalog || 'Katalog';
+  const navFeatures = uiTexts?.navFeatures || 'Keunggulan';
+  const navCart = uiTexts?.navCart || 'Keranjang';
 
   return (
     <header className="sticky top-0 z-30 border-b border-slate-200/90 bg-white/90 backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/90">
@@ -31,7 +36,7 @@ export function StorefrontHeader({
           {storeName}
         </a>
 
-        {/* Zone 2: 4 concise single-line text links */}
+        {/* Zone 2: Clean buyer-focused navigation links (Admin entry tucked discreetly in footer) */}
         <nav
           aria-label="Navigasi utama"
           className="hidden items-center gap-7 text-sm font-medium text-slate-600 md:flex dark:text-zinc-300"
@@ -40,21 +45,14 @@ export function StorefrontHeader({
             href="#katalog"
             className="whitespace-nowrap shrink-0 transition-colors hover:text-slate-900 hover:underline hover:underline-offset-4 dark:hover:text-white"
           >
-            Katalog
+            {navCatalog}
           </a>
           <a
             href="#keunggulan"
             className="whitespace-nowrap shrink-0 transition-colors hover:text-slate-900 hover:underline hover:underline-offset-4 dark:hover:text-white"
           >
-            Keunggulan
+            {navFeatures}
           </a>
-          <button
-            type="button"
-            onClick={onOpenAdmin}
-            className="cursor-pointer whitespace-nowrap shrink-0 transition-colors hover:text-slate-900 hover:underline hover:underline-offset-4 dark:hover:text-white"
-          >
-            Dasbor Admin
-          </button>
           <button
             type="button"
             onClick={onToggleTheme}
@@ -77,7 +75,7 @@ export function StorefrontHeader({
           >
             <ShoppingBag className="h-4 w-4" aria-hidden="true" />
             <span className="tabular-nums">
-              {cartCount > 0 ? `Keranjang (${cartCount})` : 'Keranjang'}
+              {cartCount > 0 ? `${navCart} (${cartCount})` : navCart}
             </span>
           </button>
 
@@ -101,25 +99,15 @@ export function StorefrontHeader({
               onClick={() => setMobileMenuOpen(false)}
               className="rounded-lg px-3 py-2.5 hover:bg-slate-100 dark:hover:bg-zinc-900"
             >
-              Katalog Produk
+              {navCatalog}
             </a>
             <a
               href="#keunggulan"
               onClick={() => setMobileMenuOpen(false)}
               className="rounded-lg px-3 py-2.5 hover:bg-slate-100 dark:hover:bg-zinc-900"
             >
-              Keunggulan &amp; Infrastruktur
+              {navFeatures}
             </a>
-            <button
-              type="button"
-              onClick={() => {
-                setMobileMenuOpen(false);
-                onOpenAdmin();
-              }}
-              className="rounded-lg px-3 py-2.5 text-left hover:bg-slate-100 dark:hover:bg-zinc-900"
-            >
-              Dasbor Admin
-            </button>
             <button
               type="button"
               onClick={() => {

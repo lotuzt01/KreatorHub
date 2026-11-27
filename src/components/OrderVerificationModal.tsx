@@ -9,8 +9,10 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import type { Order, TelegramPreferences } from '../types/store';
+import type { Order, OrderDownloadLink, Product, TelegramPreferences } from '../types/store';
 import { formatDateTimeID, formatIDR, formatPaymentMethodLabel } from '../lib/format';
+import { getAdminAuthHeaders, getAdminFirebaseIdToken } from '../lib/firebase';
+import { fetchJsonWithWarmupRetry } from '../lib/apiClient';
 import {
   adminCancelFirestoreOrder,
   adminConfirmFirestoreOrderPaid,
@@ -20,6 +22,7 @@ import {
 
 interface OrderVerificationModalProps {
   order: Order;
+  products: Product[];
   storeName: string;
   telegramPrefs: TelegramPreferences;
   serverlessAvailable?: boolean;
@@ -29,6 +32,7 @@ interface OrderVerificationModalProps {
 
 export function OrderVerificationModal({
   order,
+  products,
   storeName,
   telegramPrefs,
   serverlessAvailable = false,
@@ -86,10 +90,29 @@ export function OrderVerificationModal({
     }
   };
 
+  const productById = new Map(products.map((p) => [p.id, p]));
+
+  const buildResolvedDownloadLinks = (): OrderDownloadLink[] => {
+    const origin = window.location.origin;
+    return order.items.map((item) => {
+      const matched = productById.get(item.productId);
+      const customUrl = matched?.downloadUrl?.trim();
+      return {
+        productId: item.productId,
+        title: item.title,
+        fileName: item.fileName,
+        url:
+          customUrl ||
+          `${origin}/?invoice=${encodeURIComponent(order.invoiceCode)}&produk=${encodeURIComponent(item.productId)}`,
+      };
+    });
+  };
+
   const handleVerifyAndSendTelegram = async () => {
     setError(null);
     setBusy('verify');
     const cleanedNote = extraDeliveryNote.trim().slice(0, 300);
+    const resolvedDownloadLinks = buildResolvedDownloadLinks();
 
     try {
       let tgStatus: Order['telegramStatus'] = order.telegramStatus;
@@ -97,16 +120,17 @@ export function OrderVerificationModal({
       let telegramInfo = `Pesanan ${order.invoiceCode} diverifikasi Lunas & tautan unduhan pembeli langsung terbuka secara real-time.`;
 
       if (serverlessAvailable) {
-        const origin = window.location.origin;
-        const downloadLinks = order.items.map((item) => ({
-          title: item.title,
-          fileName: item.fileName,
-          url: `${origin}/?invoice=${encodeURIComponent(order.invoiceCode)}&produk=${encodeURIComponent(item.productId)}`,
-        }));
-
-        const tgRes = await fetch('/api/telegram', {
+        const [headers, firebaseIdToken] = await Promise.all([
+          getAdminAuthHeaders(),
+          getAdminFirebaseIdToken(),
+        ]);
+        const { data: tgData } = await fetchJsonWithWarmupRetry<{
+          status?: 'sent' | 'not_configured' | 'failed';
+          detail?: string;
+          preview?: string;
+        }>('/api/telegram', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify({
             event: 'order_paid',
             storeName,
@@ -119,15 +143,13 @@ export function OrderVerificationModal({
             totalAmount: order.totalAmount,
             adminTransferAmount: order.adminTransferAmount,
             items: order.items,
-            downloadLinks,
+            downloadLinks: resolvedDownloadLinks,
             extraDeliveryNote: cleanedNote || undefined,
             chatIdOverride: telegramPrefs.customChatIdOverride || undefined,
             messageHeader: telegramPrefs.messageHeader,
+            firebaseIdToken: firebaseIdToken || undefined,
           }),
         });
-        const tgData = (await tgRes.json().catch(() => null)) as
-          | { status?: 'sent' | 'not_configured' | 'failed'; detail?: string; preview?: string }
-          | null;
 
         if (tgData?.status) {
           tgStatus = tgData.status;
@@ -141,15 +163,22 @@ export function OrderVerificationModal({
           });
           telegramInfo =
             tgData.status === 'sent'
-              ? `Pesanan ${order.invoiceCode} diverifikasi Lunas, tautan pembeli langsung terbuka real-time, & link produk otomatis terkirim via Telegram.`
-              : `Pesanan ${order.invoiceCode} diverifikasi Lunas & terbuka real-time (${tgData.detail || 'cek pengaturan Telegram'}).`;
+              ? `Pesanan ${order.invoiceCode} diverifikasi Lunas, link download produk langsung terbuka real-time di layar pembeli, & terkirim via Telegram.`
+              : `Pesanan ${order.invoiceCode} diverifikasi Lunas & link produk langsung terbuka real-time (${tgData.detail || 'cek pengaturan Telegram'}).`;
         }
       }
 
-      await adminConfirmFirestoreOrderPaid(order, {
-        status: tgStatus,
-        detail: tgDetail,
-      });
+      await adminConfirmFirestoreOrderPaid(
+        order,
+        {
+          status: tgStatus,
+          detail: tgDetail,
+        },
+        {
+          downloadLinks: resolvedDownloadLinks,
+          deliveryNote: cleanedNote || undefined,
+        },
+      );
 
       onVerified(telegramInfo);
       onClose();
@@ -363,21 +392,33 @@ export function OrderVerificationModal({
               <span>Link Produk yang Akan Dibuka Real-Time &amp; Dikirim via Telegram</span>
             </div>
             <div className="divide-y divide-slate-200 rounded-lg border border-slate-200 bg-white text-xs dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-900">
-              {order.items.map((item) => (
-                <div key={item.productId} className="flex items-center justify-between gap-3 px-3.5 py-2.5">
-                  <div className="min-w-0">
-                    <p className="truncate font-semibold text-slate-900 dark:text-zinc-100">
-                      {item.quantity}x {item.title}
-                    </p>
-                    <p className="truncate font-mono text-[11px] text-slate-500 dark:text-zinc-400">
-                      File: {item.fileName}
-                    </p>
+              {order.items.map((item) => {
+                const customUrl = productById.get(item.productId)?.downloadUrl?.trim();
+                return (
+                  <div
+                    key={item.productId}
+                    className="flex items-center justify-between gap-3 px-3.5 py-2.5"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate font-semibold text-slate-900 dark:text-zinc-100">
+                        {item.quantity}x {item.title}
+                      </p>
+                      <p className="truncate font-mono text-[11px] text-slate-500 dark:text-zinc-400">
+                        {customUrl ? customUrl : `File: ${item.fileName}`}
+                      </p>
+                    </div>
+                    <span
+                      className={`shrink-0 font-mono text-[11px] font-medium ${
+                        customUrl
+                          ? 'text-emerald-700 dark:text-emerald-400'
+                          : 'text-amber-700 dark:text-amber-400'
+                      }`}
+                    >
+                      {customUrl ? 'Link Aplikasi Siap' : 'Tautan Invoice'}
+                    </span>
                   </div>
-                  <span className="shrink-0 font-mono text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
-                    Link Otomatis
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 

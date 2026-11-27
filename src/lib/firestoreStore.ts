@@ -17,14 +17,19 @@ import {
 import type { User } from 'firebase/auth';
 import type {
   AdminOverviewPayload,
+  MediaAsset,
+  MediaAssetCategory,
   Order,
+  OrderDownloadLink,
   OrderItem,
   OrderStatus,
   PaymentMethod,
   PaymentSettings,
   Product,
   SeoConfig,
+  SocialLinks,
   StoreSettings,
+  StoreUiTexts,
   StorefrontPayload,
   TelegramLog,
   TelegramPreferences,
@@ -36,6 +41,11 @@ import {
   db,
   handleFirestoreError,
 } from './firebase';
+import {
+  evictMediaAssetCache,
+  primeMediaAssetCache,
+  setMediaAssetCacheEntry,
+} from './mediaAssets';
 import {
   applyVercelBankConfig,
   getDefaultStaticSettings,
@@ -54,6 +64,8 @@ export interface OrderStatusSnapshot {
   adminTransferAmount?: number;
   transferProofNote?: string;
   downloadReady: boolean;
+  downloadLinks?: OrderDownloadLink[];
+  deliveryNote?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -276,6 +288,11 @@ function mapOrderDoc(id: string, raw: Record<string, unknown>): Order {
       typeof raw.transferProofNote === 'string'
         ? raw.transferProofNote
         : undefined,
+    downloadLinks: Array.isArray(raw.downloadLinks)
+      ? (raw.downloadLinks as OrderDownloadLink[])
+      : undefined,
+    deliveryNote:
+      typeof raw.deliveryNote === 'string' ? raw.deliveryNote : undefined,
     createdAt: timestampToIso(raw.createdAt),
     paidAt: raw.paidAt ? timestampToIso(raw.paidAt) : undefined,
   };
@@ -293,6 +310,64 @@ function mapTelegramLogDoc(id: string, raw: Record<string, unknown>): TelegramLo
   };
 }
 
+function normalizeSocialLinks(
+  raw: Partial<SocialLinks> | undefined,
+  defaults: SocialLinks,
+): SocialLinks {
+  return {
+    youtube: typeof raw?.youtube === 'string' ? raw.youtube.trim().slice(0, 300) : defaults.youtube,
+    tiktok: typeof raw?.tiktok === 'string' ? raw.tiktok.trim().slice(0, 300) : defaults.tiktok,
+    instagram:
+      typeof raw?.instagram === 'string' ? raw.instagram.trim().slice(0, 300) : defaults.instagram,
+    whatsapp:
+      typeof raw?.whatsapp === 'string' ? raw.whatsapp.trim().slice(0, 300) : defaults.whatsapp,
+  };
+}
+
+function normalizeUiTexts(
+  raw: Partial<StoreUiTexts> | undefined,
+  defaults: StoreUiTexts,
+): StoreUiTexts {
+  return {
+    navCatalog:
+      typeof raw?.navCatalog === 'string' && raw.navCatalog.trim()
+        ? raw.navCatalog.trim().slice(0, 40)
+        : defaults.navCatalog,
+    navFeatures:
+      typeof raw?.navFeatures === 'string' && raw.navFeatures.trim()
+        ? raw.navFeatures.trim().slice(0, 40)
+        : defaults.navFeatures,
+    navCart:
+      typeof raw?.navCart === 'string' && raw.navCart.trim()
+        ? raw.navCart.trim().slice(0, 40)
+        : defaults.navCart,
+    catalogTitle:
+      typeof raw?.catalogTitle === 'string' && raw.catalogTitle.trim()
+        ? raw.catalogTitle.trim().slice(0, 120)
+        : defaults.catalogTitle,
+    catalogSubtitle:
+      typeof raw?.catalogSubtitle === 'string' && raw.catalogSubtitle.trim()
+        ? raw.catalogSubtitle.trim().slice(0, 300)
+        : defaults.catalogSubtitle,
+    featuresTitle:
+      typeof raw?.featuresTitle === 'string' && raw.featuresTitle.trim()
+        ? raw.featuresTitle.trim().slice(0, 180)
+        : defaults.featuresTitle,
+    featuresSubtitle:
+      typeof raw?.featuresSubtitle === 'string' && raw.featuresSubtitle.trim()
+        ? raw.featuresSubtitle.trim().slice(0, 360)
+        : defaults.featuresSubtitle,
+    buyButtonText:
+      typeof raw?.buyButtonText === 'string' && raw.buyButtonText.trim()
+        ? raw.buyButtonText.trim().slice(0, 30)
+        : defaults.buyButtonText,
+    detailButtonText:
+      typeof raw?.detailButtonText === 'string' && raw.detailButtonText.trim()
+        ? raw.detailButtonText.trim().slice(0, 30)
+        : defaults.detailButtonText,
+  };
+}
+
 function normalizePublicSettings(raw: Record<string, unknown> | undefined): {
   theme: ThemeConfig;
   seo: SeoConfig;
@@ -300,6 +375,9 @@ function normalizePublicSettings(raw: Record<string, unknown> | undefined): {
   categories: string[];
 } {
   const defaults = getDefaultStaticSettings();
+  const defaultSocial = defaults.theme.socialLinks!;
+  const defaultUiTexts = defaults.theme.uiTexts!;
+
   if (!raw) {
     return {
       theme: defaults.theme,
@@ -309,6 +387,7 @@ function normalizePublicSettings(raw: Record<string, unknown> | undefined): {
     };
   }
 
+  const rawTheme = (raw.theme as Partial<ThemeConfig> | undefined) || {};
   const rawPayment = (raw.payment as Partial<PaymentSettings> | undefined) || {};
   const methods =
     Array.isArray(rawPayment.methods) && rawPayment.methods.length > 0
@@ -318,7 +397,9 @@ function normalizePublicSettings(raw: Record<string, unknown> | undefined): {
   return {
     theme: {
       ...defaults.theme,
-      ...((raw.theme as Partial<ThemeConfig> | undefined) || {}),
+      ...rawTheme,
+      socialLinks: normalizeSocialLinks(rawTheme.socialLinks, defaultSocial),
+      uiTexts: normalizeUiTexts(rawTheme.uiTexts, defaultUiTexts),
     },
     seo: {
       ...defaults.seo,
@@ -408,11 +489,14 @@ export async function seedInitialStoreDataIfEmpty(user: User): Promise<void> {
   try {
     const pubSnap = await getDoc(doc(db, 'publicSettings', 'store'));
     if (!pubSnap.exists()) {
-      await setDoc(doc(db, 'publicSettings', 'store'), {
+      const sanitized = buildSanitizedPublicSettings({
         theme: defaults.theme,
         seo: defaults.seo,
         payment: defaults.payment,
         categories: defaults.categories,
+      });
+      await setDoc(doc(db, 'publicSettings', 'store'), {
+        ...sanitized,
         updatedAt: serverTimestamp(),
       });
     }
@@ -571,38 +655,50 @@ export function subscribeAdminOverview(
   } | null,
 ): Unsubscribe {
   let products: Product[] = [];
+  let productLinksMap = new Map<string, string>();
   let orders: Order[] = [];
   let telegramLogs: TelegramLog[] = [];
+  let mediaAssets: MediaAsset[] = [];
   let publicSettings = normalizePublicSettings(undefined);
   let adminTelegram = normalizeAdminSettings(undefined);
   const ready = {
     products: false,
+    productLinks: false,
     orders: false,
     publicSettings: false,
     adminSettings: false,
     logs: false,
+    media: false,
   };
 
   const emit = () => {
     if (
       !ready.products ||
+      !ready.productLinks ||
       !ready.orders ||
       !ready.publicSettings ||
       !ready.adminSettings ||
-      !ready.logs
+      !ready.logs ||
+      !ready.media
     ) {
       return;
     }
 
-    const sortedProducts = [...products].sort((a, b) =>
-      b.createdAt.localeCompare(a.createdAt),
-    );
+    const sortedProducts = [...products]
+      .map((p) => ({
+        ...p,
+        downloadUrl: productLinksMap.get(p.id) || '',
+      }))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const sortedOrders = [...orders].sort((a, b) =>
       b.createdAt.localeCompare(a.createdAt),
     );
     const sortedLogs = [...telegramLogs]
       .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
       .slice(0, 50);
+    const sortedMedia = [...mediaAssets].sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt),
+    );
 
     const threshold = adminTelegram.lowStockThreshold ?? 5;
     const paidOrders = sortedOrders.filter((o) => o.status === 'PAID');
@@ -645,6 +741,7 @@ export function subscribeAdminOverview(
         mode: serverlessHealth?.paymentMode || 'sandbox',
       },
       telegramLogs: sortedLogs,
+      mediaAssets: sortedMedia,
       metrics: {
         totalRevenue: paidOrders.reduce(
           (sum, o) => sum + (o.adminTransferAmount ?? o.totalAmount),
@@ -748,12 +845,56 @@ export function subscribeAdminOverview(
     },
   );
 
+  const unsubMedia = onSnapshot(
+    collection(db, 'mediaAssets'),
+    (snap) => {
+      mediaAssets = snap.docs.map((d) =>
+        mapMediaAssetDoc(d.id, d.data() as Record<string, unknown>),
+      );
+      primeMediaAssetCache(mediaAssets);
+      ready.media = true;
+      emit();
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.LIST, 'mediaAssets');
+      } catch (wrapped) {
+        onError(wrapped as Error);
+      }
+    },
+  );
+
+  const unsubProductLinks = onSnapshot(
+    collection(db, 'productLinks'),
+    (snap) => {
+      const next = new Map<string, string>();
+      snap.docs.forEach((d) => {
+        const data = d.data() as Record<string, unknown>;
+        if (typeof data.downloadUrl === 'string' && data.downloadUrl.trim()) {
+          next.set(d.id, data.downloadUrl.trim());
+        }
+      });
+      productLinksMap = next;
+      ready.productLinks = true;
+      emit();
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.LIST, 'productLinks');
+      } catch (wrapped) {
+        onError(wrapped as Error);
+      }
+    },
+  );
+
   return () => {
     unsubProducts();
+    unsubProductLinks();
     unsubOrders();
     unsubPublicSettings();
     unsubAdminSettings();
     unsubLogs();
+    unsubMedia();
   };
 }
 
@@ -800,6 +941,11 @@ export function subscribeOrderStatus(
             ? raw.transferProofNote
             : undefined,
         downloadReady: Boolean(raw.downloadReady),
+        downloadLinks: Array.isArray(raw.downloadLinks)
+          ? (raw.downloadLinks as OrderDownloadLink[])
+          : undefined,
+        deliveryNote:
+          typeof raw.deliveryNote === 'string' ? raw.deliveryNote : undefined,
         createdAt: timestampToIso(raw.createdAt),
         updatedAt: timestampToIso(raw.updatedAt),
       });
@@ -836,6 +982,7 @@ export async function saveFirestoreProduct(
     fileKey: string;
     fileName: string;
     fileSize: string;
+    downloadUrl?: string;
     status: 'active' | 'draft';
     featured: boolean;
   },
@@ -930,14 +1077,25 @@ export async function saveFirestoreProduct(
       );
     }
 
+    // Persist private download URL strictly in Admin-only /productLinks/{productId}
+    const cleanDownloadUrl = (payload.downloadUrl || '').trim().slice(0, 600);
+    if (cleanDownloadUrl) {
+      await setDoc(doc(db, 'productLinks', productId), {
+        productId,
+        downloadUrl: cleanDownloadUrl,
+        updatedAt: serverTimestamp(),
+      });
+    } else if (existingProduct) {
+      await deleteDoc(doc(db, 'productLinks', productId)).catch(() => {});
+    }
+
     // Ensure new category is registered in /publicSettings/store
     const pubSnap = await getDoc(doc(db, 'publicSettings', 'store'));
     if (pubSnap.exists()) {
       const current = normalizePublicSettings(pubSnap.data() as Record<string, unknown>);
       if (!current.categories.includes(cleanCategory) && current.categories.length < 30) {
-        await updateDoc(doc(db, 'publicSettings', 'store'), {
+        await saveFirestorePublicSettings({
           categories: [...current.categories, cleanCategory],
-          updatedAt: serverTimestamp(),
         });
       }
     }
@@ -971,9 +1129,115 @@ export async function deleteFirestoreProduct(productId: string): Promise<void> {
   const path = `products/${productId}`;
   try {
     await deleteDoc(doc(db, 'products', productId));
+    await deleteDoc(doc(db, 'productLinks', productId)).catch(() => {});
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
+}
+
+function buildSanitizedPublicSettings(input: {
+  theme: ThemeConfig;
+  seo: SeoConfig;
+  payment: PaymentSettings;
+  categories: string[];
+}): {
+  theme: ThemeConfig;
+  seo: SeoConfig;
+  payment: PaymentSettings;
+  categories: string[];
+} {
+  const defaults = getDefaultStaticSettings();
+
+  const cleanStoreName =
+    String(input.theme.storeName ?? '').trim().slice(0, 100) || defaults.theme.storeName;
+  const cleanHeroImage =
+    String(input.theme.heroImage ?? '').trim().slice(0, 500) || defaults.theme.heroImage;
+  const cleanAccentColor =
+    String(input.theme.accentColor ?? '').trim().slice(0, 20) || defaults.theme.accentColor;
+
+  const nextTheme: ThemeConfig = {
+    storeName: cleanStoreName,
+    heroEyebrow: String(input.theme.heroEyebrow ?? '').trim().slice(0, 120),
+    heroHeadline: String(input.theme.heroHeadline ?? '').trim().slice(0, 240),
+    heroSubheadline: String(input.theme.heroSubheadline ?? '').trim().slice(0, 600),
+    heroCtaText: String(input.theme.heroCtaText ?? '').trim().slice(0, 60),
+    heroImage: cleanHeroImage,
+    accentColor: cleanAccentColor,
+    defaultMode: input.theme.defaultMode === 'dark' ? 'dark' : 'light',
+    cornerStyle:
+      input.theme.cornerStyle === 'sharp' || input.theme.cornerStyle === 'soft'
+        ? input.theme.cornerStyle
+        : 'modern',
+    gridColumns: Number(input.theme.gridColumns) === 2 ? 2 : 3,
+    contactEmail: String(input.theme.contactEmail ?? '').trim().slice(0, 160),
+    footerNotice: String(input.theme.footerNotice ?? '').trim().slice(0, 300),
+    socialLinks: normalizeSocialLinks(input.theme.socialLinks, defaults.theme.socialLinks!),
+    uiTexts: normalizeUiTexts(input.theme.uiTexts, defaults.theme.uiTexts!),
+  };
+
+  const nextSeo: SeoConfig = {
+    metaTitle: String(input.seo.metaTitle ?? '').trim().slice(0, 160),
+    metaDescription: String(input.seo.metaDescription ?? '').trim().slice(0, 400),
+    keywords: String(input.seo.keywords ?? '').trim().slice(0, 400),
+    canonicalUrl: String(input.seo.canonicalUrl ?? '').trim().slice(0, 300),
+    ogSiteName:
+      String(input.seo.ogSiteName ?? '').trim().slice(0, 100) || defaults.seo.ogSiteName,
+  };
+
+  const validProviders: PaymentSettings['provider'][] = [
+    'builtin_auto',
+    'midtrans',
+    'tripay',
+    'xendit',
+  ];
+  const cleanProvider = validProviders.includes(input.payment.provider)
+    ? input.payment.provider
+    : 'builtin_auto';
+  const cleanMerchantName =
+    String(input.payment.merchantName ?? '').trim().slice(0, 120) ||
+    defaults.payment.merchantName;
+  const parsedExpiry = Number(input.payment.expiryMinutes);
+  const cleanExpiry = Number.isFinite(parsedExpiry)
+    ? Math.min(1440, Math.max(5, Math.round(parsedExpiry)))
+    : defaults.payment.expiryMinutes;
+  const sourceMethods =
+    Array.isArray(input.payment.methods) && input.payment.methods.length > 0
+      ? input.payment.methods
+      : defaults.payment.methods;
+  const cleanMethods = sourceMethods.slice(0, 10).map((m) => ({
+    id: m.id,
+    label: String(m.label ?? '').trim().slice(0, 100),
+    description: String(m.description ?? '').trim().slice(0, 240),
+    enabled: Boolean(m.enabled),
+    accountNumber: String(m.accountNumber ?? '').trim().slice(0, 80),
+    accountHolder: String(m.accountHolder ?? '').trim().slice(0, 120),
+  }));
+
+  const nextPayment: PaymentSettings = {
+    provider: cleanProvider,
+    merchantName: cleanMerchantName,
+    qrisMerchantId: String(input.payment.qrisMerchantId ?? '').trim().slice(0, 80),
+    qrisImageUrl: String(input.payment.qrisImageUrl ?? '').trim().slice(0, 500),
+    expiryMinutes: cleanExpiry,
+    autoConfirmDemo: Boolean(input.payment.autoConfirmDemo),
+    methods: cleanMethods,
+  };
+
+  const uniqueCats = Array.from(
+    new Set(
+      (Array.isArray(input.categories) ? input.categories : [])
+        .map((c) => String(c ?? '').trim().slice(0, 80))
+        .filter(Boolean),
+    ),
+  ).slice(0, 30);
+  const nextCategories = uniqueCats.length > 0 ? uniqueCats : defaults.categories;
+
+  return {
+    theme: nextTheme,
+    seo: nextSeo,
+    payment: nextPayment,
+    categories: nextCategories,
+  };
 }
 
 export async function saveFirestorePublicSettings(patch: {
@@ -991,33 +1255,46 @@ export async function saveFirestorePublicSettings(patch: {
     );
     const defaults = getDefaultStaticSettings();
 
-    const nextTheme = patch.resetTheme
+    const mergedTheme: ThemeConfig = patch.resetTheme
       ? defaults.theme
       : patch.theme
-        ? { ...current.theme, ...patch.theme }
+        ? {
+            ...current.theme,
+            ...patch.theme,
+            socialLinks: normalizeSocialLinks(
+              patch.theme.socialLinks ?? current.theme.socialLinks,
+              defaults.theme.socialLinks!,
+            ),
+            uiTexts: normalizeUiTexts(
+              patch.theme.uiTexts ?? current.theme.uiTexts,
+              defaults.theme.uiTexts!,
+            ),
+          }
         : current.theme;
-    const nextSeo = patch.seo ? { ...current.seo, ...patch.seo } : current.seo;
-    const nextPayment = patch.payment
+
+    const mergedSeo = patch.seo ? { ...current.seo, ...patch.seo } : current.seo;
+    const mergedPayment = patch.payment
       ? { ...current.payment, ...patch.payment }
       : current.payment;
-    const nextCategories =
+    const mergedCategories =
       patch.categories && patch.categories.length > 0
         ? patch.categories
         : current.categories;
 
+    const sanitized = buildSanitizedPublicSettings({
+      theme: mergedTheme,
+      seo: mergedSeo,
+      payment: mergedPayment,
+      categories: mergedCategories,
+    });
+
     await setDoc(doc(db, 'publicSettings', 'store'), {
-      theme: nextTheme,
-      seo: nextSeo,
-      payment: nextPayment,
-      categories: nextCategories,
+      ...sanitized,
       updatedAt: serverTimestamp(),
     });
 
     return {
-      theme: nextTheme,
-      seo: nextSeo,
-      payment: nextPayment,
-      categories: nextCategories,
+      ...sanitized,
       telegram: defaults.telegram,
     };
   } catch (error) {
@@ -1328,8 +1605,22 @@ export async function adminConfirmFirestoreOrderPaid(
     status?: Order['telegramStatus'];
     detail?: string;
   },
+  deliveryPayload?: {
+    downloadLinks?: OrderDownloadLink[];
+    deliveryNote?: string;
+  },
 ): Promise<void> {
   const batch = writeBatch(db);
+  const cleanLinks = (deliveryPayload?.downloadLinks || [])
+    .filter((l) => l && typeof l.url === 'string' && l.url.trim())
+    .slice(0, 20)
+    .map((l) => ({
+      productId: String(l.productId || '').slice(0, 128),
+      title: String(l.title || '').slice(0, 160),
+      fileName: String(l.fileName || '').slice(0, 200),
+      url: String(l.url || '').trim().slice(0, 600),
+    }));
+  const cleanDeliveryNote = deliveryPayload?.deliveryNote?.trim().slice(0, 300) || undefined;
 
   batch.update(
     doc(db, 'orders', order.id),
@@ -1340,15 +1631,22 @@ export async function adminConfirmFirestoreOrderPaid(
       telegramMessage: telegramMeta?.detail
         ? telegramMeta.detail.slice(0, 500)
         : order.telegramMessage,
+      downloadLinks: cleanLinks.length > 0 ? cleanLinks : undefined,
+      deliveryNote: cleanDeliveryNote,
       updatedAt: serverTimestamp(),
     }),
   );
 
-  batch.update(doc(db, 'orderStatuses', order.id), {
-    status: 'PAID',
-    downloadReady: true,
-    updatedAt: serverTimestamp(),
-  });
+  batch.update(
+    doc(db, 'orderStatuses', order.id),
+    stripUndefined({
+      status: 'PAID',
+      downloadReady: true,
+      downloadLinks: cleanLinks.length > 0 ? cleanLinks : undefined,
+      deliveryNote: cleanDeliveryNote,
+      updatedAt: serverTimestamp(),
+    }),
+  );
 
   // Update salesCount and limited stock on purchased products
   if (order.status !== 'PAID') {
@@ -1399,3 +1697,108 @@ export async function adminCancelFirestoreOrder(orderId: string): Promise<void> 
     handleFirestoreError(error, OperationType.UPDATE, `orders/${orderId}`);
   }
 }
+
+// =============================================================================
+// Media Asset Gallery CRUD (Real-Time Firestore /mediaAssets)
+// =============================================================================
+
+function mapMediaAssetDoc(id: string, raw: Record<string, unknown>): MediaAsset {
+  return {
+    id: String(raw.id || id),
+    label: String(raw.label || 'Aset Gambar'),
+    category:
+      raw.category === 'product' || raw.category === 'hero' || raw.category === 'general'
+        ? raw.category
+        : 'general',
+    sourceType: raw.sourceType === 'url' ? 'url' : 'upload',
+    url: String(raw.url || ''),
+    mimeType: String(raw.mimeType || 'image/jpeg'),
+    width: Number(raw.width || 0),
+    height: Number(raw.height || 0),
+    sizeBytes: Number(raw.sizeBytes || 0),
+    createdAt: timestampToIso(raw.createdAt),
+    updatedAt: timestampToIso(raw.updatedAt),
+  };
+}
+
+export async function createFirestoreMediaAsset(params: {
+  label: string;
+  category: MediaAssetCategory;
+  sourceType: 'upload' | 'url';
+  url: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  sizeBytes: number;
+}): Promise<MediaAsset> {
+  const assetId = `asset-${randomHex(8)}`;
+  const path = `mediaAssets/${assetId}`;
+  const cleanLabel = (params.label.trim() || 'Gambar Toko').slice(0, 120);
+  const cleanCategory: MediaAssetCategory =
+    params.category === 'product' || params.category === 'hero' ? params.category : 'general';
+  const cleanUrl = params.url.trim();
+
+  if (params.sourceType === 'url') {
+    if (!cleanUrl.startsWith('https://') || cleanUrl.length < 8 || cleanUrl.length > 500) {
+      throw new Error('URL gambar harus diawali https:// dan maksimal 500 karakter.');
+    }
+  } else {
+    const validPrefix =
+      cleanUrl.startsWith('data:image/jpeg;base64,') ||
+      cleanUrl.startsWith('data:image/webp;base64,') ||
+      cleanUrl.startsWith('data:image/png;base64,');
+    if (!validPrefix || cleanUrl.length > 280_000) {
+      throw new Error('Format unggahan harus JPG, PNG, atau WebP (maksimal ~200 KB setelah kompresi).');
+    }
+  }
+
+  const cleanMime = (params.mimeType || 'image/jpeg').trim().slice(0, 40);
+  const cleanWidth = Math.min(4096, Math.max(0, Math.round(params.width || 0)));
+  const cleanHeight = Math.min(4096, Math.max(0, Math.round(params.height || 0)));
+  const cleanSize = Math.min(280_000, Math.max(0, Math.round(params.sizeBytes || cleanUrl.length)));
+
+  try {
+    await setDoc(doc(db, 'mediaAssets', assetId), {
+      id: assetId,
+      label: cleanLabel,
+      category: cleanCategory,
+      sourceType: params.sourceType,
+      url: cleanUrl,
+      mimeType: cleanMime,
+      width: cleanWidth,
+      height: cleanHeight,
+      sizeBytes: cleanSize,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+
+  setMediaAssetCacheEntry(assetId, cleanUrl);
+  const nowIso = new Date().toISOString();
+  return {
+    id: assetId,
+    label: cleanLabel,
+    category: cleanCategory,
+    sourceType: params.sourceType,
+    url: cleanUrl,
+    mimeType: cleanMime,
+    width: cleanWidth,
+    height: cleanHeight,
+    sizeBytes: cleanSize,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
+}
+
+export async function deleteFirestoreMediaAsset(assetId: string): Promise<void> {
+  const path = `mediaAssets/${assetId}`;
+  try {
+    await deleteDoc(doc(db, 'mediaAssets', assetId));
+    evictMediaAssetCache(assetId);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+

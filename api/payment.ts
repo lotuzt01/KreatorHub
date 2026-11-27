@@ -92,7 +92,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         | null;
 
       if (!response.ok || !data?.redirect_url) {
-        res.status(502).json({
+        res.status(400).json({
           error: data?.error_messages?.[0] || `Midtrans HTTP ${response.status}`,
         });
         return;
@@ -107,7 +107,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       });
       return;
     } catch (err) {
-      res.status(502).json({
+      res.status(500).json({
         error: err instanceof Error ? err.message : 'Gagal membuat transaksi Midtrans.',
       });
       return;

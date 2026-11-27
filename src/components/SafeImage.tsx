@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Package } from 'lucide-react';
-import { resolveAssetUrl } from '../lib/format';
+import { useResolvedAssetSrc } from '../lib/mediaAssets';
 
 interface SafeImageProps {
   src: string;
@@ -10,8 +10,22 @@ interface SafeImageProps {
 }
 
 export function SafeImage({ src, alt, className = '', fallbackLabel }: SafeImageProps) {
+  const { resolvedSrc, loading } = useResolvedAssetSrc(src);
   const [failed, setFailed] = useState(false);
-  const resolvedSrc = resolveAssetUrl(src);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [resolvedSrc]);
+
+  if (loading && !resolvedSrc) {
+    return (
+      <div
+        role="img"
+        aria-label={alt}
+        className={`animate-pulse bg-slate-200/70 dark:bg-zinc-800/80 ${className}`}
+      />
+    );
+  }
 
   if (!resolvedSrc || failed) {
     return (

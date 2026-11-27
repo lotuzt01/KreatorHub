@@ -3,6 +3,7 @@ import { onAuthStateChanged, type User } from 'firebase/auth';
 import type { CartItem, Product, StorefrontPayload } from './types/store';
 import { darkenHex, getRadiusPx } from './lib/format';
 import { auth, signOutAdmin, verifyAdminAccess } from './lib/firebase';
+import { fetchJsonWithWarmupRetry } from './lib/apiClient';
 import {
   seedInitialStoreDataIfEmpty,
   subscribePublicStorefront,
@@ -26,8 +27,18 @@ function updateMetaTag(selector: string, attribute: 'name' | 'property', key: st
   el.setAttribute('content', value);
 }
 
+function hasAdminUrlFlag(): boolean {
+  try {
+    const hash = window.location.hash.toLowerCase();
+    const params = new URLSearchParams(window.location.search);
+    return hash === '#admin' || hash === '#/admin' || params.get('admin') === '1';
+  } catch {
+    return false;
+  }
+}
+
 export default function App() {
-  const [route, setRoute] = useState<AppRoute>('storefront');
+  const [route, setRoute] = useState<AppRoute>(() => (hasAdminUrlFlag() ? 'admin' : 'storefront'));
   const [storefront, setStorefront] = useState<StorefrontPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [storeError, setStoreError] = useState<string | null>(null);
@@ -64,15 +75,17 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
-    fetch('/api/health', { headers: { Accept: 'application/json' } })
-      .then(async (res) => {
-        const contentType = res.headers.get('content-type') || '';
-        if (!res.ok || !contentType.includes('application/json')) return null;
-        return (await res.json()) as ServerlessHealthInfo;
-      })
-      .then((health) => {
-        if (active && health?.ok) {
-          setServerlessHealth(health);
+    fetchJsonWithWarmupRetry<ServerlessHealthInfo>(
+      '/api/health',
+      {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      },
+      { maxAttempts: 3 },
+    )
+      .then(({ res, data }) => {
+        if (active && res.ok && data?.ok) {
+          setServerlessHealth(data);
         }
       })
       .catch(() => {
@@ -127,6 +140,15 @@ export default function App() {
 
     return () => unsubscribe();
   }, [userToggledTheme, serverlessHealth?.bankConfig]);
+
+  // Listen for #admin hash navigation so owner can bookmark /#admin directly
+  useEffect(() => {
+    const onHashChange = () => {
+      if (hasAdminUrlFlag()) setRoute('admin');
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
 
   // Open specific product if shared via ?produk=slug SEO link
   useEffect(() => {
@@ -301,11 +323,11 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-zinc-950 dark:text-zinc-100">
       <StorefrontHeader
         storeName={storefront?.settings.theme.storeName || 'Karsa Digital'}
+        uiTexts={storefront?.settings.theme.uiTexts}
         cartCount={cartCount}
         isDark={isDark}
         onToggleTheme={handleToggleTheme}
         onOpenCart={() => setCartOpen(true)}
-        onOpenAdmin={() => setRoute('admin')}
       />
 
       {storeError ? (

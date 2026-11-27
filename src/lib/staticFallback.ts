@@ -111,6 +111,25 @@ export function getDefaultStaticSettings(): StoreSettings {
       gridColumns: 3,
       contactEmail: 'halo@karsadigital.id',
       footerNotice: 'Lisensi komersial resmi untuk kreator, agensi, dan tim produk.',
+      socialLinks: {
+        youtube: '',
+        tiktok: '',
+        instagram: '',
+        whatsapp: '',
+      },
+      uiTexts: {
+        navCatalog: 'Katalog',
+        navFeatures: 'Keunggulan',
+        navCart: 'Keranjang',
+        catalogTitle: 'Katalog Produk Digital',
+        catalogSubtitle:
+          'Semua produk dilengkapi pembaruan berkala, manajemen stok otomatis, dan tautan unduhan instan setelah pembayaran.',
+        featuresTitle: 'Infrastruktur toko digital yang cepat, otomatis, dan siap tumbuh.',
+        featuresSubtitle:
+          'Dirancang agar pemilik produk bisa mengatur katalog, tampilan visual, stok, serta notifikasi pesanan tanpa menulis ulang kode.',
+        buyButtonText: 'Beli',
+        detailButtonText: 'Detail',
+      },
     },
     seo: {
       metaTitle: 'Karsa Digital — Katalog Produk Digital & Toko Otomatis',
@@ -423,6 +442,7 @@ export function getStaticAdminOverview(serverlessHealth?: {
       mode: serverlessHealth?.paymentMode || 'sandbox',
     },
     telegramLogs: db.telegramLogs,
+    mediaAssets: [],
     metrics: {
       totalRevenue: paidOrders.reduce((sum, o) => sum + o.totalAmount, 0),
       paidOrdersCount: paidOrders.length,

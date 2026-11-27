@@ -147,7 +147,7 @@
     },
     "OrderStatus": {
       "title": "OrderStatus",
-      "description": "PII-free real-time status mirror for an individual order so buyers receive live bank instructions and payment confirmation without exposing PII.",
+      "description": "PII-free real-time status mirror for an individual order so buyers receive live bank instructions, payment confirmation, and unlocked download links without exposing PII.",
       "type": "object",
       "properties": {
         "orderId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
@@ -167,6 +167,8 @@
         "adminTransferAmount": { "type": "number" },
         "transferProofNote": { "type": "string", "maxLength": 200 },
         "downloadReady": { "type": "boolean" },
+        "downloadLinks": { "type": "array" },
+        "deliveryNote": { "type": "string", "maxLength": 300 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -210,6 +212,48 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "email", "role", "createdAt"]
+    },
+    "MediaAsset": {
+      "title": "MediaAsset",
+      "description": "Storefront image asset (compressed gallery upload or HTTPS URL) managed by Admin and referenced via asset://<id>.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "category": { "type": "string", "enum": ["product", "hero", "general"] },
+        "sourceType": { "type": "string", "enum": ["upload", "url"] },
+        "url": { "type": "string", "minLength": 8, "maxLength": 280000 },
+        "mimeType": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "width": { "type": "number" },
+        "height": { "type": "number" },
+        "sizeBytes": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "label",
+        "category",
+        "sourceType",
+        "url",
+        "mimeType",
+        "width",
+        "height",
+        "sizeBytes",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ProductLink": {
+      "title": "ProductLink",
+      "description": "Admin-only private download URL for a digital product, unlocked into /orderStatuses only after payment is verified PAID.",
+      "type": "object",
+      "properties": {
+        "productId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "downloadUrl": { "type": "string", "maxLength": 600 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["productId", "downloadUrl", "updatedAt"]
     }
   },
   "firestore": {
@@ -217,9 +261,13 @@
       "schema": { "$ref": "#/entities/Product" },
       "description": "Publicly readable active products; admin-only full CRUD."
     },
+    "/productLinks/{productId}": {
+      "schema": { "$ref": "#/entities/ProductLink" },
+      "description": "Private product download URLs readable and writable exclusively by Admin so links never leak before payment."
+    },
     "/publicSettings/{configId}": {
       "schema": { "$ref": "#/entities/PublicSettings" },
-      "description": "Public storefront configuration (theme, SEO, payment channels, categories) at /publicSettings/store."
+      "description": "Public storefront configuration (theme, socialLinks, uiTexts, SEO, payment channels, categories) at /publicSettings/store."
     },
     "/adminSettings/{configId}": {
       "schema": { "$ref": "#/entities/AdminSettings" },
@@ -231,7 +279,7 @@
     },
     "/orderStatuses/{orderId}": {
       "schema": { "$ref": "#/entities/OrderStatus" },
-      "description": "PII-free real-time status document fetched by exact orderId only (never listed publicly)."
+      "description": "PII-free real-time status document fetched by exact orderId only (never listed publicly); receives downloadLinks strictly upon Admin PAID verification."
     },
     "/telegramLogs/{logId}": {
       "schema": { "$ref": "#/entities/TelegramLog" },
@@ -240,6 +288,10 @@
     "/admins/{uid}": {
       "schema": { "$ref": "#/entities/AdminUser" },
       "description": "Trusted admin role registry managed exclusively by the bootstrapped admin."
+    },
+    "/mediaAssets/{assetId}": {
+      "schema": { "$ref": "#/entities/MediaAsset" },
+      "description": "Storefront image assets fetched publicly by exact assetId; listing and CRUD strictly admin-only."
     }
   }
 }

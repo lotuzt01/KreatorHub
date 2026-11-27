@@ -2,14 +2,18 @@ import { useMemo, useState } from 'react';
 import {
   ArrowRight,
   Globe,
+  Instagram,
   Layers,
+  Lock,
+  MessageCircle,
   Search,
   Send,
   ShieldCheck,
   ShoppingBag,
+  Youtube,
 } from 'lucide-react';
 import type { Product, StorefrontPayload } from '../types/store';
-import { formatIDR } from '../lib/format';
+import { formatIDR, isSafeHttpOrLocalUrl } from '../lib/format';
 import { SafeImage } from './SafeImage';
 
 interface StorefrontViewProps {
@@ -23,6 +27,19 @@ interface StorefrontViewProps {
 
 type SortOption = 'featured' | 'price_asc' | 'price_desc' | 'popular';
 
+function TikTokIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1z" />
+    </svg>
+  );
+}
+
 export function StorefrontView({
   data,
   isDark,
@@ -33,6 +50,8 @@ export function StorefrontView({
 }: StorefrontViewProps) {
   const { products, settings, stats } = data;
   const { theme, categories } = settings;
+  const uiTexts = theme.uiTexts;
+  const socialLinks = theme.socialLinks;
 
   const [selectedCategory, setSelectedCategory] = useState<string>('Semua');
   const [searchQuery, setSearchQuery] = useState('');
@@ -65,10 +84,47 @@ export function StorefrontView({
     });
   }, [products, selectedCategory, searchQuery, sortBy]);
 
+  const activeSocials = useMemo(() => {
+    const items: Array<{
+      id: string;
+      label: string;
+      href: string;
+      icon: 'youtube' | 'tiktok' | 'instagram' | 'whatsapp';
+    }> = [];
+    if (socialLinks?.youtube && isSafeHttpOrLocalUrl(socialLinks.youtube)) {
+      items.push({ id: 'youtube', label: 'YouTube', href: socialLinks.youtube, icon: 'youtube' });
+    }
+    if (socialLinks?.tiktok && isSafeHttpOrLocalUrl(socialLinks.tiktok)) {
+      items.push({ id: 'tiktok', label: 'TikTok', href: socialLinks.tiktok, icon: 'tiktok' });
+    }
+    if (socialLinks?.instagram && isSafeHttpOrLocalUrl(socialLinks.instagram)) {
+      items.push({ id: 'instagram', label: 'Instagram', href: socialLinks.instagram, icon: 'instagram' });
+    }
+    if (socialLinks?.whatsapp && isSafeHttpOrLocalUrl(socialLinks.whatsapp)) {
+      items.push({ id: 'whatsapp', label: 'WhatsApp', href: socialLinks.whatsapp, icon: 'whatsapp' });
+    }
+    return items;
+  }, [socialLinks]);
+
   const gridClass =
     theme.gridColumns === 2
       ? 'grid-cols-1 gap-8 md:grid-cols-2'
       : 'grid-cols-1 gap-8 md:grid-cols-2 lg:grid-cols-3';
+
+  const navCatalogLabel = uiTexts?.navCatalog || 'Katalog';
+  const navFeaturesLabel = uiTexts?.navFeatures || 'Keunggulan';
+  const catalogTitle = uiTexts?.catalogTitle || 'Katalog Produk Digital';
+  const catalogSubtitle =
+    uiTexts?.catalogSubtitle ||
+    'Semua produk dilengkapi pembaruan berkala, manajemen stok otomatis, dan tautan unduhan instan setelah pembayaran.';
+  const featuresTitle =
+    uiTexts?.featuresTitle ||
+    'Infrastruktur toko digital yang cepat, otomatis, dan siap tumbuh.';
+  const featuresSubtitle =
+    uiTexts?.featuresSubtitle ||
+    'Dirancang agar pemilik produk bisa mengatur katalog, tampilan visual, stok, serta notifikasi pesanan tanpa menulis ulang kode.';
+  const buyButtonText = uiTexts?.buyButtonText || 'Beli';
+  const detailButtonText = uiTexts?.detailButtonText || 'Detail';
 
   return (
     <main id="beranda">
@@ -103,14 +159,13 @@ export function StorefrontView({
                   <ArrowRight className="h-4 w-4" aria-hidden="true" />
                 </a>
 
-                <button
-                  type="button"
-                  onClick={onOpenAdmin}
+                <a
+                  href="#keunggulan"
                   style={{ borderRadius: 'var(--store-radius)' }}
-                  className="inline-flex h-12 cursor-pointer items-center px-5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-100 whitespace-nowrap shrink-0 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                  className="inline-flex h-12 items-center px-5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-100 whitespace-nowrap shrink-0 dark:text-zinc-200 dark:hover:bg-zinc-900"
                 >
-                  Kelola di Dasbor Admin
-                </button>
+                  {navFeaturesLabel}
+                </a>
               </div>
             </div>
 
@@ -158,10 +213,10 @@ export function StorefrontView({
             </div>
             <div>
               <p className="font-mono text-2xl font-semibold tabular-nums text-slate-900 dark:text-zinc-50">
-                JSON-LD + XML
+                Real-Time
               </p>
               <p className="mt-1 text-sm text-slate-500 dark:text-zinc-400">
-                Siap indeks Google &amp; domain gratis
+                Akses unduhan instan setelah lunas
               </p>
             </div>
           </div>
@@ -176,10 +231,10 @@ export function StorefrontView({
         <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
           <div>
             <h2 className="font-display text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl dark:text-zinc-50">
-              Katalog Produk Digital
+              {catalogTitle}
             </h2>
             <p className="mt-2 max-w-xl text-sm leading-relaxed text-slate-600 dark:text-zinc-400">
-              Semua produk dilengkapi pembaruan berkala, manajemen stok otomatis, dan tautan unduhan instan setelah pembayaran.
+              {catalogSubtitle}
             </p>
           </div>
 
@@ -339,7 +394,7 @@ export function StorefrontView({
                           onClick={() => onSelectProduct(product)}
                           className="h-9 cursor-pointer rounded-lg px-3 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 whitespace-nowrap dark:text-zinc-300 dark:hover:bg-zinc-800 dark:hover:text-white"
                         >
-                          Detail
+                          {detailButtonText}
                         </button>
                         <button
                           type="button"
@@ -352,7 +407,7 @@ export function StorefrontView({
                           className="inline-flex h-9 cursor-pointer items-center gap-1.5 px-3.5 text-xs font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500 whitespace-nowrap dark:disabled:bg-zinc-800 dark:disabled:text-zinc-500"
                         >
                           <ShoppingBag className="h-3.5 w-3.5" aria-hidden="true" />
-                          <span>{outOfStock ? 'Habis' : 'Beli'}</span>
+                          <span>{outOfStock ? 'Habis' : buyButtonText}</span>
                         </button>
                       </div>
                     </div>
@@ -372,10 +427,10 @@ export function StorefrontView({
         <div className="mx-auto max-w-[1200px] px-4 sm:px-6 lg:px-8">
           <div className="max-w-2xl">
             <h2 className="font-display text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl [text-wrap:balance] dark:text-zinc-50">
-              Infrastruktur toko digital yang cepat, otomatis, dan siap tumbuh.
+              {featuresTitle}
             </h2>
             <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-zinc-400">
-              Dirancang agar pemilik produk bisa mengatur katalog, tampilan visual, stok, serta notifikasi pesanan tanpa menulis ulang kode.
+              {featuresSubtitle}
             </p>
           </div>
 
@@ -387,10 +442,10 @@ export function StorefrontView({
             >
               <ShieldCheck className="h-5 w-5 text-slate-700 dark:text-zinc-300" aria-hidden="true" />
               <h3 className="mt-4 font-display text-lg font-bold text-slate-900 dark:text-zinc-50">
-                01. Pembayaran Otomatis &amp; Manajemen Stok Terkendali
+                01. Pembayaran Praktis &amp; Verifikasi Instan
               </h3>
               <p className="mt-2.5 text-sm leading-relaxed text-slate-600 dark:text-zinc-300">
-                Mendukung QRIS, Virtual Account, dan E-Wallet dengan kalkulasi total di sisi server. Stok lisensi berkurang otomatis saat pesanan dibuat dan tautan unduhan file langsung terbuka begitu pembayaran terkonfirmasi.
+                Mendukung transfer bank via konfirmasi Telegram langsung maupun metode pembayaran lain. Begitu pembayaran terverifikasi, tautan unduhan aplikasi langsung terbuka otomatis di layar Anda.
               </p>
             </div>
 
@@ -403,7 +458,7 @@ export function StorefrontView({
                 02. Notifikasi Bot Telegram Real-Time
               </h3>
               <p className="mt-2.5 text-sm leading-relaxed text-slate-600 dark:text-zinc-300">
-                Setiap pesanan baru, konfirmasi pembayaran lunas, hingga peringatan stok menipis dikirim langsung ke chat atau grup Telegram admin secara instan.
+                Setiap pesanan baru, konfirmasi transfer, hingga pengiriman tautan produk diproses langsung secara real-time tanpa menunggu lama.
               </p>
             </div>
 
@@ -413,10 +468,10 @@ export function StorefrontView({
             >
               <Layers className="h-5 w-5 text-slate-700 dark:text-zinc-300" aria-hidden="true" />
               <h3 className="mt-4 font-display text-lg font-bold text-slate-900 dark:text-zinc-50">
-                03. Editor Produk &amp; Tema Tanpa Coding
+                03. Pembaruan &amp; Akses Produk Terjamin
               </h3>
               <p className="mt-2.5 text-sm leading-relaxed text-slate-600 dark:text-zinc-300">
-                Unggah file produk, atur harga, kategori, warna aksen, sudut kartu, hingga metadata SEO langsung dari dasbor admin dengan pratinjau seketika.
+                Setiap produk digital dikurasi dengan dokumentasi jelas, lisensi resmi, dan tautan unduhan aman yang langsung dikirim setelah transaksi lunas.
               </p>
             </div>
 
@@ -426,48 +481,89 @@ export function StorefrontView({
             >
               <Globe className="h-5 w-5 text-slate-700 dark:text-zinc-300" aria-hidden="true" />
               <h3 className="mt-4 font-display text-lg font-bold text-slate-900 dark:text-zinc-50">
-                04. Optimasi SEO &amp; Siap Deploy ke GitHub Pages, Vercel, dan Netlify
+                04. Sinkronisasi Cloud Cepat di Semua Perangkat
               </h3>
               <p className="mt-2.5 text-sm leading-relaxed text-slate-600 dark:text-zinc-300">
-                Repositori sudah dilengkapi workflow GitHub Pages, konfigurasi <span className="font-mono text-xs">vercel.json</span>, <span className="font-mono text-xs">netlify.toml</span>, <span className="font-mono text-xs">robots.txt</span>, sitemap XML dinamis, OpenGraph, serta Schema.org JSON-LD untuk pengindeksan mesin pencari yang optimal.
+                Pesan lewat ponsel atau laptop dengan nyaman — status pesanan dan akses unduhan selalu tersinkronisasi seketika secara aman.
               </p>
             </div>
           </div>
         </div>
       </section>
 
-      {/* SECTION 4: QUIET FOOTER */}
+      {/* SECTION 4: QUIET FOOTER + SOCIAL MEDIA + DISCREET ADMIN ACCESS */}
       <footer className="border-t border-slate-200 bg-slate-50 py-10 dark:border-zinc-800 dark:bg-zinc-950">
-        <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-4 sm:px-6 md:flex-row md:items-center md:justify-between lg:px-8">
-          <div>
-            <p className="font-display text-base font-bold text-slate-900 dark:text-zinc-50">
-              {theme.storeName}
-            </p>
-            <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
-              {theme.footerNotice} · {theme.contactEmail}
-            </p>
+        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 lg:px-8">
+          <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="font-display text-base font-bold text-slate-900 dark:text-zinc-50">
+                {theme.storeName}
+              </p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
+                {theme.footerNotice} · {theme.contactEmail}
+              </p>
+
+              {/* Active Social Media Links (YouTube, TikTok, Instagram, WhatsApp) */}
+              {activeSocials.length > 0 && (
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  {activeSocials.map((item) => (
+                    <a
+                      key={item.id}
+                      href={item.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label={item.label}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 transition-colors hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-white"
+                    >
+                      {item.icon === 'youtube' && (
+                        <Youtube className="h-3.5 w-3.5 text-red-600 dark:text-red-400" aria-hidden="true" />
+                      )}
+                      {item.icon === 'tiktok' && (
+                        <TikTokIcon className="h-3.5 w-3.5 text-slate-900 dark:text-zinc-100" />
+                      )}
+                      {item.icon === 'instagram' && (
+                        <Instagram className="h-3.5 w-3.5 text-pink-600 dark:text-pink-400" aria-hidden="true" />
+                      )}
+                      {item.icon === 'whatsapp' && (
+                        <MessageCircle className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+                      )}
+                      <span>{item.label}</span>
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-6 text-xs font-medium text-slate-600 dark:text-zinc-400">
+              <a href="#katalog" className="hover:text-slate-900 dark:hover:text-zinc-100">
+                {navCatalogLabel}
+              </a>
+              <a href="#keunggulan" className="hover:text-slate-900 dark:hover:text-zinc-100">
+                {navFeaturesLabel}
+              </a>
+              <button
+                type="button"
+                onClick={onToggleTheme}
+                className="cursor-pointer hover:text-slate-900 dark:hover:text-zinc-100"
+              >
+                {isDark ? 'Mode Terang' : 'Mode Gelap'}
+              </button>
+            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-6 text-xs font-medium text-slate-600 dark:text-zinc-400">
-            <a href="#katalog" className="hover:text-slate-900 dark:hover:text-zinc-100">
-              Katalog
-            </a>
+          {/* Subtle bottom legal row with discreet Admin Login trigger */}
+          <div className="mt-8 flex items-center justify-between border-t border-slate-200/80 pt-5 text-[11px] text-slate-400 dark:border-zinc-800/80 dark:text-zinc-600">
+            <span>
+              &copy; {new Date().getFullYear()} {theme.storeName}. Hak cipta dilindungi.
+            </span>
             <button
               type="button"
               onClick={onOpenAdmin}
-              className="cursor-pointer hover:text-slate-900 dark:hover:text-zinc-100"
+              title="Masuk area pengelola toko"
+              className="inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-slate-400/75 transition-colors hover:text-slate-600 dark:text-zinc-600 dark:hover:text-zinc-400"
             >
-              Dasbor Admin
-            </button>
-            <a href="/sitemap.xml" className="hover:text-slate-900 dark:hover:text-zinc-100">
-              Sitemap XML
-            </a>
-            <button
-              type="button"
-              onClick={onToggleTheme}
-              className="cursor-pointer hover:text-slate-900 dark:hover:text-zinc-100"
-            >
-              {isDark ? 'Mode Terang' : 'Mode Gelap'}
+              <Lock className="h-3 w-3" aria-hidden="true" />
+              <span>Pengelola</span>
             </button>
           </div>
         </div>

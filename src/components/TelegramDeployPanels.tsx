@@ -22,6 +22,8 @@ import {
   appendFirestoreTelegramLog,
   saveFirestoreAdminSettings,
 } from '../lib/firestoreStore';
+import { getAdminAuthHeaders, getAdminFirebaseIdToken } from '../lib/firebase';
+import { fetchJsonWithWarmupRetry } from '../lib/apiClient';
 
 interface TelegramSettingsPanelProps {
   storeName?: string;
@@ -70,6 +72,54 @@ export function TelegramSettingsPanel({
     }
   };
 
+  const postTelegramAdmin = async (
+    payload: Record<string, unknown>,
+    fallbackActionLabel: string,
+  ): Promise<{
+    status?: 'sent' | 'not_configured' | 'failed';
+    detail?: string;
+    preview?: string;
+    error?: string;
+  }> => {
+    const [headers, firebaseIdToken] = await Promise.all([
+      getAdminAuthHeaders(),
+      getAdminFirebaseIdToken(),
+    ]);
+    const bodyStr = JSON.stringify({
+      ...payload,
+      firebaseIdToken: firebaseIdToken || undefined,
+    });
+
+    const { res, data, contentType, htmlTitle } = await fetchJsonWithWarmupRetry<{
+      status?: 'sent' | 'not_configured' | 'failed';
+      detail?: string;
+      preview?: string;
+      error?: string;
+    }>(
+      '/api/telegram',
+      {
+        method: 'POST',
+        headers,
+        body: bodyStr,
+      },
+      {
+        maxAttempts: 3,
+        onWarmup: (msg) => setMessage({ type: 'ok', text: msg }),
+      },
+    );
+
+    if (!res.ok || !data) {
+      const titleHint = htmlTitle ? ` (${htmlTitle})` : '';
+      throw new Error(
+        data?.error ||
+          data?.detail ||
+          `${fallbackActionLabel} (HTTP ${res.status}, ${contentType || 'non-JSON'}${titleHint}). Silakan coba lagi beberapa detik lagi.`,
+      );
+    }
+
+    return data;
+  };
+
   const handleTestSend = async () => {
     if (!serverlessAvailable) {
       setMessage({
@@ -82,23 +132,15 @@ export function TelegramSettingsPanel({
     setTesting(true);
     setMessage(null);
     try {
-      const res = await fetch('/api/telegram', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const data = await postTelegramAdmin(
+        {
           event: 'test',
           storeName,
           chatIdOverride: draft.customChatIdOverride || undefined,
           messageHeader: draft.messageHeader,
-        }),
-      });
-      const data = (await res.json()) as {
-        status?: 'sent' | 'not_configured' | 'failed';
-        detail?: string;
-        preview?: string;
-        error?: string;
-      };
-      if (!res.ok) throw new Error(data.error || data.detail || 'Gagal menjalankan uji koneksi.');
+        },
+        'Gagal menghubungi server Telegram',
+      );
       const statusVal = data.status || 'failed';
       await appendFirestoreTelegramLog({
         event: 'test',
@@ -132,22 +174,14 @@ export function TelegramSettingsPanel({
     setSendingHelp(true);
     setMessage(null);
     try {
-      const res = await fetch('/api/telegram', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const data = await postTelegramAdmin(
+        {
           event: 'help',
           storeName,
           chatIdOverride: draft.customChatIdOverride || undefined,
-        }),
-      });
-      const data = (await res.json()) as {
-        status?: 'sent' | 'not_configured' | 'failed';
-        detail?: string;
-        preview?: string;
-        error?: string;
-      };
-      if (!res.ok) throw new Error(data.error || data.detail || 'Gagal mengirim panduan /help.');
+        },
+        'Gagal mengirim panduan /help',
+      );
       const statusVal = data.status || 'failed';
       await appendFirestoreTelegramLog({
         event: 'help',

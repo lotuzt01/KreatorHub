@@ -1,5 +1,26 @@
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import type { IncomingMessage, ServerResponse } from 'http';
+
+interface FirebaseAppletConfig {
+  apiKey?: string;
+  projectId?: string;
+  firestoreDatabaseId?: string;
+}
+
+function loadFirebaseAppletConfig(): FirebaseAppletConfig {
+  try {
+    const configPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
+    const raw = fs.readFileSync(configPath, 'utf8');
+    return JSON.parse(raw) as FirebaseAppletConfig;
+  } catch {
+    return {};
+  }
+}
+
+const firebaseConfig = loadFirebaseAppletConfig();
+const BOOTSTRAPPED_ADMIN_EMAIL = 'nomigosone@gmail.com';
 
 interface VercelRequest extends IncomingMessage {
   body?: unknown;
@@ -45,6 +66,7 @@ interface TelegramRequestBody {
   adminBankNumber?: string;
   adminBankHolder?: string;
   adminTransferAmount?: number;
+  firebaseIdToken?: string;
 }
 
 interface ParsedBankInstruction {
@@ -86,7 +108,10 @@ function applyCors(req: IncomingMessage, res: ServerResponse): boolean {
     res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Admin-Passcode');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, X-Firebase-Auth, Authorization, X-Admin-Passcode',
+    );
   }
   if (req.method === 'OPTIONS') {
     res.statusCode = 204;
@@ -100,6 +125,52 @@ function safeEqual(a: string, b: string): boolean {
   const ha = crypto.createHash('sha256').update(a).digest();
   const hb = crypto.createHash('sha256').update(b).digest();
   return crypto.timingSafeEqual(ha, hb);
+}
+
+async function verifyFirebaseAdminToken(idToken: string): Promise<boolean> {
+  const token = idToken.trim();
+  const apiKey = (firebaseConfig.apiKey || '').trim();
+  if (!token || !apiKey || token.length > 4096) return false;
+
+  try {
+    // Hardcoded official Firebase Identity Toolkit token verification endpoint
+    const lookupRes = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken: token }),
+      },
+    );
+    if (!lookupRes.ok) return false;
+
+    const lookupData = (await lookupRes.json().catch(() => null)) as
+      | { users?: Array<{ localId?: string; email?: string; emailVerified?: boolean }> }
+      | null;
+    const user = lookupData?.users?.[0];
+    if (!user || user.emailVerified !== true || !user.localId) return false;
+
+    if (typeof user.email === 'string' && user.email.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL) {
+      return true;
+    }
+
+    // Check /admins/{uid} using the caller's verified Firebase ID token
+    const projectId = (firebaseConfig.projectId || '').trim();
+    const databaseId = (firebaseConfig.firestoreDatabaseId || '(default)').trim();
+    if (!projectId || !/^[a-zA-Z0-9_-]{1,128}$/.test(user.localId)) return false;
+
+    const adminDocUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/${encodeURIComponent(databaseId)}/documents/admins/${encodeURIComponent(user.localId)}`;
+    const adminRes = await fetch(adminDocUrl, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!adminRes.ok) return false;
+    const adminDoc = (await adminRes.json().catch(() => null)) as
+      | { fields?: { role?: { stringValue?: string } } }
+      | null;
+    return adminDoc?.fields?.role?.stringValue === 'admin';
+  } catch {
+    return false;
+  }
 }
 
 function parseAmountValue(raw: string): number | null {
@@ -379,13 +450,34 @@ async function handlePollOrderStatus(req: VercelRequest, res: VercelResponse): P
       bank,
     });
   } catch (err) {
-    res.status(502).json({
+    res.status(200).json({
       configured: true,
       stage: 'AWAITING_BANK',
       bank: null,
       error: err instanceof Error ? err.message : 'Gagal membaca balasan Telegram.',
     });
   }
+}
+
+function explainTelegramApiError(statusCode: number, description?: string): string {
+  const raw = (description || '').trim();
+  const lower = raw.toLowerCase();
+  if (statusCode === 401 || lower.includes('unauthorized')) {
+    return `Token Bot Telegram (TELEGRAM_BOT_TOKEN) tidak valid (${raw || 'HTTP 401'}). Periksa kembali token dari @BotFather di Secrets server.`;
+  }
+  if (lower.includes('chat not found')) {
+    return `Chat ID Telegram (TELEGRAM_CHAT_ID) tidak ditemukan (${raw}). Pastikan Anda sudah membuka bot Anda di Telegram lalu menekan /start, atau cek ulang ID chat Anda dari @userinfobot.`;
+  }
+  if (lower.includes('bot was blocked')) {
+    return `Bot sedang diblokir oleh akun Telegram tujuan (${raw}). Buka blokir bot lalu tekan /start di Telegram.`;
+  }
+  if (lower.includes("can't initiate conversation") || lower.includes('initiate conversation')) {
+    return `Bot belum diizinkan memulai chat (${raw}). Buka bot Anda di Telegram lalu tekan tombol /start terlebih dahulu.`;
+  }
+  if (statusCode === 404 || lower.includes('not found')) {
+    return `Token Bot Telegram tidak dikenali (${raw || 'HTTP 404'}). Pastikan TELEGRAM_BOT_TOKEN tidak berisi awalan "bot" dan tidak ada spasi ekstra.`;
+  }
+  return raw ? `Telegram API menolak pengiriman: ${raw}` : `Telegram API mengembalikan HTTP ${statusCode}.`;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
@@ -403,7 +495,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   }
 
   const botToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
-  const body = (typeof req.body === 'string' ? JSON.parse(req.body || '{}') : req.body || {}) as TelegramRequestBody;
+  let body: TelegramRequestBody = {};
+  if (typeof req.body === 'string') {
+    try {
+      body = JSON.parse(req.body || '{}') as TelegramRequestBody;
+    } catch {
+      res.status(400).json({ error: 'Format payload JSON tidak valid.' });
+      return;
+    }
+  } else if (req.body && typeof req.body === 'object') {
+    body = req.body as TelegramRequestBody;
+  }
   const chatId = String(body.chatIdOverride || process.env.TELEGRAM_CHAT_ID || '').trim();
 
   if (!botToken || !chatId) {
@@ -426,12 +528,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
-  // If ADMIN_PASSCODE is configured on Vercel, verify it for manual admin pings
-  const envPasscode = (process.env.ADMIN_PASSCODE || '').trim();
-  if ((event === 'test' || event === 'help') && envPasscode) {
-    const provided = String(req.headers['x-admin-passcode'] || '').trim();
-    if (!provided || !safeEqual(provided, envPasscode)) {
-      res.status(401).json({ error: 'ADMIN_PASSCODE diperlukan untuk mengirim pesan admin Telegram.' });
+  // Verify server-side admin authentication for privileged Telegram admin actions
+  if (event === 'test' || event === 'help' || event === 'order_paid') {
+    const bodyToken = typeof body.firebaseIdToken === 'string' ? body.firebaseIdToken.trim() : '';
+    const firebaseHeader = String(req.headers['x-firebase-auth'] || '').trim();
+    const authHeader = String(req.headers.authorization || '').trim();
+    const bearerToken =
+      bodyToken ||
+      firebaseHeader ||
+      (authHeader.startsWith('Bearer ') ? authHeader.slice('Bearer '.length).trim() : '');
+    const envPasscode = (process.env.ADMIN_PASSCODE || '').trim();
+    const providedPasscode = String(req.headers['x-admin-passcode'] || '').trim();
+
+    const passcodeValid = Boolean(envPasscode && providedPasscode && safeEqual(providedPasscode, envPasscode));
+    const firebaseAdminValid = bearerToken ? await verifyFirebaseAdminToken(bearerToken) : false;
+
+    if (!firebaseAdminValid && !passcodeValid) {
+      res.status(401).json({
+        error: 'Sesi admin terverifikasi diperlukan untuk mengirim pesan admin Telegram. Silakan login ulang dengan akun Google admin.',
+      });
       return;
     }
   }
@@ -587,9 +702,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       | null;
 
     if (!tgRes.ok || !tgPayload?.ok) {
-      res.status(502).json({
+      // Return HTTP 200 with status:'failed' so reverse proxies never intercept 502 with an HTML error page
+      res.status(200).json({
         status: 'failed',
-        detail: tgPayload?.description || `HTTP ${tgRes.status}`,
+        detail: explainTelegramApiError(tgRes.status, tgPayload?.description),
+        preview: text,
       });
       return;
     }
@@ -597,13 +714,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     res.status(200).json({
       status: 'sent',
       messageId: tgPayload.result?.message_id ?? null,
-      detail: 'Notifikasi terkirim real-time ke Telegram melalui Vercel Serverless.',
+      detail: 'Notifikasi terkirim real-time ke Telegram.',
       preview: text,
     });
   } catch (err) {
-    res.status(502).json({
+    res.status(200).json({
       status: 'failed',
       detail: err instanceof Error ? err.message : 'Gagal menghubungi server Telegram.',
+      preview: text,
     });
   }
 }

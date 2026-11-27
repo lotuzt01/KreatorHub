@@ -28,6 +28,7 @@ import type {
   Product,
 } from '../types/store';
 import { formatIDR, formatPaymentMethodLabel, isSafeHttpOrLocalUrl } from '../lib/format';
+import { fetchJsonWithWarmupRetry } from '../lib/apiClient';
 import {
   createFirestoreOrder,
   submitFirestoreTransferProof,
@@ -172,6 +173,8 @@ export function CartCheckoutDrawer({
             liveStatus.adminTransferAmount ?? prev.order.adminTransferAmount,
           transferProofNote:
             liveStatus.transferProofNote ?? prev.order.transferProofNote,
+          downloadLinks: liveStatus.downloadLinks ?? prev.order.downloadLinks,
+          deliveryNote: liveStatus.deliveryNote ?? prev.order.deliveryNote,
           paidAt:
             liveStatus.status === 'PAID'
               ? prev.order.paidAt || liveStatus.updatedAt
@@ -362,21 +365,18 @@ export function CartCheckoutDrawer({
       return { status: 'not_configured', detail: 'Endpoint Telegram tidak aktif di hosting statis murni.' };
     }
     try {
-      const tgRes = await fetch('/api/telegram', {
+      const { data: tgData } = await fetchJsonWithWarmupRetry<{
+        status?: 'sent' | 'not_configured' | 'failed';
+        detail?: string;
+        messageId?: number | null;
+      }>('/api/telegram', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({
           ...payload,
           storeName,
         }),
       });
-      const tgData = (await tgRes.json().catch(() => null)) as
-        | {
-            status?: 'sent' | 'not_configured' | 'failed';
-            detail?: string;
-            messageId?: number | null;
-          }
-        | null;
       return {
         status: tgData?.status || 'failed',
         detail: tgData?.detail,
@@ -1252,33 +1252,76 @@ export function CartCheckoutDrawer({
 
               <div className="space-y-2.5">
                 <p className="text-xs font-semibold text-slate-700 dark:text-zinc-300">
-                  Tautan Unduhan Produk Digital
+                  Tautan Unduhan Produk / Aplikasi
                 </p>
-                {activeOrder.items.map((item) => (
-                  <div
-                    key={item.productId}
-                    className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3.5 dark:border-zinc-800 dark:bg-zinc-900"
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-slate-900 dark:text-zinc-100">
-                        {item.title}
-                      </p>
-                      <p className="truncate font-mono text-xs text-slate-500 dark:text-zinc-400">
-                        {item.fileName}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => triggerStaticLicenseDownload(activeOrder, item)}
-                      style={{ backgroundColor: 'var(--store-accent)' }}
-                      className="inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-3.5 text-xs font-semibold text-white transition-opacity hover:opacity-90 whitespace-nowrap"
+                {activeOrder.items.map((item) => {
+                  const matchedLink = activeOrder.downloadLinks?.find(
+                    (l) => l.productId === item.productId,
+                  );
+                  const rawUrl = matchedLink?.url?.trim() || '';
+                  const isExternalProductUrl =
+                    Boolean(rawUrl) &&
+                    isSafeHttpOrLocalUrl(rawUrl) &&
+                    !rawUrl.includes(`?invoice=${encodeURIComponent(activeOrder.invoiceCode)}`);
+
+                  return (
+                    <div
+                      key={item.productId}
+                      className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-3.5 sm:flex-row sm:items-center sm:justify-between dark:border-zinc-800 dark:bg-zinc-900"
                     >
-                      <Download className="h-3.5 w-3.5" aria-hidden="true" />
-                      <span>Unduh</span>
-                    </button>
-                  </div>
-                ))}
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-900 dark:text-zinc-100">
+                          {item.title}
+                        </p>
+                        <p className="truncate font-mono text-xs text-slate-500 dark:text-zinc-400">
+                          {isExternalProductUrl ? 'Link download aplikasi aktif' : item.fileName}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {isExternalProductUrl ? (
+                          <>
+                            <a
+                              href={rawUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ backgroundColor: 'var(--store-accent)' }}
+                              className="inline-flex h-9 items-center gap-1.5 rounded-lg px-3.5 text-xs font-semibold text-white transition-opacity hover:opacity-90 whitespace-nowrap"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                              <span>Unduh Aplikasi</span>
+                            </a>
+                            <button
+                              type="button"
+                              onClick={() => triggerStaticLicenseDownload(activeOrder, item)}
+                              className="inline-flex h-9 cursor-pointer items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                            >
+                              <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                              <span>Kwitansi</span>
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => triggerStaticLicenseDownload(activeOrder, item)}
+                            style={{ backgroundColor: 'var(--store-accent)' }}
+                            className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-lg px-3.5 text-xs font-semibold text-white transition-opacity hover:opacity-90 whitespace-nowrap"
+                          >
+                            <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                            <span>Unduh</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
+
+              {activeOrder.deliveryNote && (
+                <div className="rounded-lg border border-blue-200 bg-blue-50/70 p-3.5 text-xs text-blue-950 dark:border-blue-900/60 dark:bg-blue-950/35 dark:text-blue-100">
+                  <p className="font-semibold">Catatan &amp; Panduan dari Admin</p>
+                  <p className="mt-1 break-words leading-relaxed">{activeOrder.deliveryNote}</p>
+                </div>
+              )}
 
               <div className="flex items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 p-3.5 text-xs text-slate-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
                 <Send className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />
