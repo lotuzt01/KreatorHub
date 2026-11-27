@@ -18,17 +18,17 @@ import type {
   TelegramPreferences,
 } from '../types/store';
 import { formatDateTimeID } from '../lib/format';
-import { appendStaticTelegramLog, saveStaticSettings } from '../lib/staticFallback';
+import {
+  appendFirestoreTelegramLog,
+  saveFirestoreAdminSettings,
+} from '../lib/firestoreStore';
 
 interface TelegramSettingsPanelProps {
   storeName?: string;
   preferences: TelegramPreferences;
   status: TelegramConnectionStatus;
   logs: TelegramLog[];
-  adminToken: string;
-  isStaticMode?: boolean;
   serverlessAvailable?: boolean;
-  onUpdated: () => void;
 }
 
 export function TelegramSettingsPanel({
@@ -36,10 +36,7 @@ export function TelegramSettingsPanel({
   preferences,
   status,
   logs,
-  adminToken,
-  isStaticMode = false,
   serverlessAvailable = false,
-  onUpdated,
 }: TelegramSettingsPanelProps) {
   const [draft, setDraft] = useState<TelegramPreferences>(preferences);
   const [saving, setSaving] = useState(false);
@@ -58,27 +55,11 @@ export function TelegramSettingsPanel({
     setSaving(true);
     setMessage(null);
     try {
-      if (isStaticMode) {
-        saveStaticSettings({ telegram: draft });
-        setMessage({
-          type: 'ok',
-          text: 'Preferensi disimpan secara lokal. Jalankan server Node.js untuk pengiriman Bot Telegram real-time.',
-        });
-        onUpdated();
-        return;
-      }
-      const res = await fetch('/api/admin/settings', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify({ telegram: draft }),
+      await saveFirestoreAdminSettings(draft);
+      setMessage({
+        type: 'ok',
+        text: 'Pengaturan notifikasi Bot Telegram disimpan ke database cloud secara real-time.',
       });
-      const data = (await res.json()) as { error?: string };
-      if (!res.ok) throw new Error(data.error || 'Gagal menyimpan preferensi Telegram.');
-      setMessage({ type: 'ok', text: 'Pengaturan notifikasi Bot Telegram disimpan.' });
-      onUpdated();
     } catch (err) {
       setMessage({
         type: 'err',
@@ -90,10 +71,10 @@ export function TelegramSettingsPanel({
   };
 
   const handleTestSend = async () => {
-    if (isStaticMode && !serverlessAvailable) {
+    if (!serverlessAvailable) {
       setMessage({
         type: 'err',
-        text: 'GitHub Pages adalah hosting statis tanpa server sehingga tidak bisa memanggil Bot Telegram langsung. Import repositori GitHub Anda ke Vercel (gratis) dan atur TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID di Environment Variables agar tombol ini langsung aktif.',
+        text: 'Pengiriman Bot Telegram memerlukan deployment Vercel/Server dengan TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID di Environment Variables.',
       });
       return;
     }
@@ -101,56 +82,34 @@ export function TelegramSettingsPanel({
     setTesting(true);
     setMessage(null);
     try {
-      if (isStaticMode && serverlessAvailable) {
-        const res = await fetch('/api/telegram', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            event: 'test',
-            storeName,
-            chatIdOverride: draft.customChatIdOverride || undefined,
-            messageHeader: draft.messageHeader,
-          }),
-        });
-        const data = (await res.json()) as {
-          status?: 'sent' | 'not_configured' | 'failed';
-          detail?: string;
-          preview?: string;
-          error?: string;
-        };
-        if (!res.ok) throw new Error(data.error || data.detail || 'Gagal menjalankan uji koneksi.');
-        const statusVal = data.status || 'failed';
-        appendStaticTelegramLog({
-          id: `tg-${Date.now()}`,
-          timestamp: new Date().toISOString(),
-          event: 'test',
-          status: statusVal,
-          detail: data.detail || 'Selesai',
-          preview: data.preview || `Uji Koneksi Bot Telegram — ${storeName}`,
-        });
-        setMessage({
-          type: statusVal === 'sent' ? 'ok' : 'err',
-          text: data.detail || 'Pengujian selesai.',
-        });
-        onUpdated();
-        return;
-      }
-
-      const res = await fetch('/api/admin/telegram/test', {
+      const res = await fetch('/api/telegram', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${adminToken}` },
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event: 'test',
+          storeName,
+          chatIdOverride: draft.customChatIdOverride || undefined,
+          messageHeader: draft.messageHeader,
+        }),
       });
       const data = (await res.json()) as {
-        result?: { status: string; detail: string };
+        status?: 'sent' | 'not_configured' | 'failed';
+        detail?: string;
+        preview?: string;
         error?: string;
       };
-      if (!res.ok) throw new Error(data.error || 'Gagal menjalankan uji koneksi.');
-      const ok = data.result?.status === 'sent';
-      setMessage({
-        type: ok ? 'ok' : 'err',
-        text: data.result?.detail || 'Pengujian selesai.',
+      if (!res.ok) throw new Error(data.error || data.detail || 'Gagal menjalankan uji koneksi.');
+      const statusVal = data.status || 'failed';
+      await appendFirestoreTelegramLog({
+        event: 'test',
+        status: statusVal,
+        detail: data.detail || 'Selesai',
+        preview: data.preview || `Uji Koneksi Bot Telegram — ${storeName}`,
       });
-      onUpdated();
+      setMessage({
+        type: statusVal === 'sent' ? 'ok' : 'err',
+        text: data.detail || 'Pengujian selesai.',
+      });
     } catch (err) {
       setMessage({
         type: 'err',
@@ -162,7 +121,7 @@ export function TelegramSettingsPanel({
   };
 
   const handleSendHelp = async () => {
-    if (isStaticMode && !serverlessAvailable) {
+    if (!serverlessAvailable) {
       setMessage({
         type: 'err',
         text: 'Hubungkan repositori ke Vercel dan atur TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID agar panduan /help dapat dikirim langsung ke chat Telegram Anda.',
@@ -173,60 +132,36 @@ export function TelegramSettingsPanel({
     setSendingHelp(true);
     setMessage(null);
     try {
-      if (isStaticMode && serverlessAvailable) {
-        const res = await fetch('/api/telegram', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            event: 'help',
-            storeName,
-            chatIdOverride: draft.customChatIdOverride || undefined,
-          }),
-        });
-        const data = (await res.json()) as {
-          status?: 'sent' | 'not_configured' | 'failed';
-          detail?: string;
-          preview?: string;
-          error?: string;
-        };
-        if (!res.ok) throw new Error(data.error || data.detail || 'Gagal mengirim panduan /help.');
-        const statusVal = data.status || 'failed';
-        appendStaticTelegramLog({
-          id: `tg-${Date.now()}`,
-          timestamp: new Date().toISOString(),
-          event: 'help',
-          status: statusVal,
-          detail: data.detail || 'Panduan /help dikirim',
-          preview: data.preview || `Panduan Perintah /help — ${storeName}`,
-        });
-        setMessage({
-          type: statusVal === 'sent' ? 'ok' : 'err',
-          text:
-            statusVal === 'sent'
-              ? 'Panduan perintah /help berhasil dikirim ke Telegram Anda.'
-              : data.detail || 'Gagal mengirim panduan /help.',
-        });
-        onUpdated();
-        return;
-      }
-
-      const res = await fetch('/api/admin/telegram/help', {
+      const res = await fetch('/api/telegram', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${adminToken}` },
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event: 'help',
+          storeName,
+          chatIdOverride: draft.customChatIdOverride || undefined,
+        }),
       });
       const data = (await res.json()) as {
-        result?: { status: string; detail: string };
+        status?: 'sent' | 'not_configured' | 'failed';
+        detail?: string;
+        preview?: string;
         error?: string;
       };
-      if (!res.ok) throw new Error(data.error || 'Gagal mengirim panduan /help.');
-      const ok = data.result?.status === 'sent';
-      setMessage({
-        type: ok ? 'ok' : 'err',
-        text: ok
-          ? 'Panduan perintah /help berhasil dikirim ke Telegram Anda.'
-          : data.result?.detail || 'Gagal mengirim panduan /help.',
+      if (!res.ok) throw new Error(data.error || data.detail || 'Gagal mengirim panduan /help.');
+      const statusVal = data.status || 'failed';
+      await appendFirestoreTelegramLog({
+        event: 'help',
+        status: statusVal,
+        detail: data.detail || 'Panduan /help dikirim',
+        preview: data.preview || `Panduan Perintah /help — ${storeName}`,
       });
-      onUpdated();
+      setMessage({
+        type: statusVal === 'sent' ? 'ok' : 'err',
+        text:
+          statusVal === 'sent'
+            ? 'Panduan perintah /help berhasil dikirim ke Telegram Anda.'
+            : data.detail || 'Gagal mengirim panduan /help.',
+      });
     } catch (err) {
       setMessage({
         type: 'err',
@@ -320,7 +255,7 @@ export function TelegramSettingsPanel({
         </div>
       </div>
 
-      {isStaticMode && !serverlessAvailable && (
+      {!serverlessAvailable && (
         <div className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50/80 p-4 text-xs leading-relaxed text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <div>

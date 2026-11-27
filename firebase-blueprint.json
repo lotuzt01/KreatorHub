@@ -1,0 +1,245 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Digital product listed in the Karsa Digital storefront catalog.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "slug": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "title": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "price": { "type": "number" },
+        "originalPrice": { "type": "number" },
+        "stock": { "type": "number" },
+        "unlimitedStock": { "type": "boolean" },
+        "shortDescription": { "type": "string", "maxLength": 400 },
+        "description": { "type": "string", "maxLength": 4000 },
+        "highlights": { "type": "array" },
+        "format": { "type": "string", "maxLength": 80 },
+        "fileSize": { "type": "string", "maxLength": 40 },
+        "fileName": { "type": "string", "maxLength": 200 },
+        "fileKey": { "type": "string", "maxLength": 200 },
+        "coverImage": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "enum": ["active", "draft"] },
+        "featured": { "type": "boolean" },
+        "salesCount": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "slug",
+        "title",
+        "category",
+        "price",
+        "stock",
+        "unlimitedStock",
+        "shortDescription",
+        "description",
+        "highlights",
+        "format",
+        "fileSize",
+        "fileName",
+        "fileKey",
+        "coverImage",
+        "status",
+        "featured",
+        "salesCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PublicSettings": {
+      "title": "PublicSettings",
+      "description": "Publicly readable storefront theme, SEO, payment channels, and product categories (no secrets or PII).",
+      "type": "object",
+      "properties": {
+        "theme": { "type": "object" },
+        "seo": { "type": "object" },
+        "payment": { "type": "object" },
+        "categories": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["theme", "seo", "payment", "categories", "updatedAt"]
+    },
+    "AdminSettings": {
+      "title": "AdminSettings",
+      "description": "Admin-only Telegram notification preferences and chat ID overrides.",
+      "type": "object",
+      "properties": {
+        "notifyOnOrderCreated": { "type": "boolean" },
+        "notifyOnOrderPaid": { "type": "boolean" },
+        "notifyOnLowStock": { "type": "boolean" },
+        "lowStockThreshold": { "type": "number" },
+        "customChatIdOverride": { "type": "string", "maxLength": 64 },
+        "messageHeader": { "type": "string", "maxLength": 160 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "notifyOnOrderCreated",
+        "notifyOnOrderPaid",
+        "notifyOnLowStock",
+        "lowStockThreshold",
+        "customChatIdOverride",
+        "messageHeader",
+        "updatedAt"
+      ]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer order containing PII (name, email, phone) strictly restricted to admin reads.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "invoiceCode": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "buyerSecret": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "customerName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "customerEmail": { "type": "string", "format": "email", "maxLength": 160 },
+        "customerPhone": { "type": "string", "minLength": 6, "maxLength": 64 },
+        "paymentMethod": {
+          "type": "string",
+          "enum": ["telegram_bank", "bank_transfer", "qris", "va_bca", "va_mandiri", "ewallet_gopay", "ewallet_dana"]
+        },
+        "paymentReference": { "type": "string", "maxLength": 100 },
+        "items": { "type": "array" },
+        "totalAmount": { "type": "number" },
+        "status": {
+          "type": "string",
+          "enum": ["AWAITING_BANK", "PENDING", "PAYMENT_SUBMITTED", "PAID", "CANCELLED"]
+        },
+        "downloadToken": { "type": "string", "maxLength": 128 },
+        "telegramStatus": {
+          "type": "string",
+          "enum": ["sent", "not_configured", "failed", "pending"]
+        },
+        "telegramMessage": { "type": "string", "maxLength": 500 },
+        "telegramOrderMessageId": { "type": "number" },
+        "telegramTransferMessageId": { "type": "number" },
+        "adminBankName": { "type": "string", "maxLength": 80 },
+        "adminBankNumber": { "type": "string", "maxLength": 40 },
+        "adminBankHolder": { "type": "string", "maxLength": 120 },
+        "adminTransferAmount": { "type": "number" },
+        "transferProofNote": { "type": "string", "maxLength": 200 },
+        "bankSyncSecret": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "transferSyncSecret": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "paidAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "invoiceCode",
+        "buyerSecret",
+        "customerName",
+        "customerEmail",
+        "customerPhone",
+        "paymentMethod",
+        "paymentReference",
+        "items",
+        "totalAmount",
+        "status",
+        "downloadToken",
+        "telegramStatus",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "OrderStatus": {
+      "title": "OrderStatus",
+      "description": "PII-free real-time status mirror for an individual order so buyers receive live bank instructions and payment confirmation without exposing PII.",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "invoiceCode": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "paymentMethod": {
+          "type": "string",
+          "enum": ["telegram_bank", "bank_transfer", "qris", "va_bca", "va_mandiri", "ewallet_gopay", "ewallet_dana"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["AWAITING_BANK", "PENDING", "PAYMENT_SUBMITTED", "PAID", "CANCELLED"]
+        },
+        "totalAmount": { "type": "number" },
+        "adminBankName": { "type": "string", "maxLength": 80 },
+        "adminBankNumber": { "type": "string", "maxLength": 40 },
+        "adminBankHolder": { "type": "string", "maxLength": 120 },
+        "adminTransferAmount": { "type": "number" },
+        "transferProofNote": { "type": "string", "maxLength": 200 },
+        "downloadReady": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "orderId",
+        "invoiceCode",
+        "paymentMethod",
+        "status",
+        "totalAmount",
+        "downloadReady",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TelegramLog": {
+      "title": "TelegramLog",
+      "description": "Admin audit trail of outgoing Telegram notifications.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "event": {
+          "type": "string",
+          "enum": ["order_created", "transfer_submitted", "order_paid", "low_stock", "test", "help"]
+        },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["sent", "not_configured", "failed"] },
+        "detail": { "type": "string", "maxLength": 300 },
+        "preview": { "type": "string", "maxLength": 1500 }
+      },
+      "required": ["id", "timestamp", "event", "status", "detail", "preview"]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Authorized store administrator record keyed by Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "role": { "type": "string", "enum": ["admin"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Publicly readable active products; admin-only full CRUD."
+    },
+    "/publicSettings/{configId}": {
+      "schema": { "$ref": "#/entities/PublicSettings" },
+      "description": "Public storefront configuration (theme, SEO, payment channels, categories) at /publicSettings/store."
+    },
+    "/adminSettings/{configId}": {
+      "schema": { "$ref": "#/entities/AdminSettings" },
+      "description": "Admin-only Telegram settings at /adminSettings/telegram."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Customer orders containing PII; strictly admin-only reads; buyer create/proof updates guarded by schema and buyerSecret."
+    },
+    "/orderStatuses/{orderId}": {
+      "schema": { "$ref": "#/entities/OrderStatus" },
+      "description": "PII-free real-time status document fetched by exact orderId only (never listed publicly)."
+    },
+    "/telegramLogs/{logId}": {
+      "schema": { "$ref": "#/entities/TelegramLog" },
+      "description": "Admin-only Telegram delivery logs."
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Trusted admin role registry managed exclusively by the bootstrapped admin."
+    }
+  }
+}

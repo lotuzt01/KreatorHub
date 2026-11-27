@@ -1,7 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { onAuthStateChanged, type User } from 'firebase/auth';
 import type { CartItem, Product, StorefrontPayload } from './types/store';
 import { darkenHex, getRadiusPx } from './lib/format';
-import { getStaticStorefrontPayload } from './lib/staticFallback';
+import { auth, signOutAdmin, verifyAdminAccess } from './lib/firebase';
+import {
+  seedInitialStoreDataIfEmpty,
+  subscribePublicStorefront,
+} from './lib/firestoreStore';
 import { StorefrontHeader } from './components/StorefrontHeader';
 import { StorefrontView } from './components/StorefrontView';
 import { ProductDetailModal } from './components/ProductDetailModal';
@@ -25,6 +30,7 @@ export default function App() {
   const [route, setRoute] = useState<AppRoute>('storefront');
   const [storefront, setStorefront] = useState<StorefrontPayload | null>(null);
   const [loading, setLoading] = useState(true);
+  const [storeError, setStoreError] = useState<string | null>(null);
   const [isDark, setIsDark] = useState<boolean>(() => {
     try {
       const saved = window.localStorage.getItem('karsa_theme_mode');
@@ -47,79 +53,92 @@ export default function App() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [cartOpen, setCartOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [deepLinkHandled, setDeepLinkHandled] = useState(false);
 
-  // Admin session token strictly held in React memory (never localStorage)
-  const [adminToken, setAdminToken] = useState<string | null>(null);
-  const [isStaticMode, setIsStaticMode] = useState<boolean>(false);
+  // Firebase Auth state for Admin Dashboard
+  const [authReady, setAuthReady] = useState(false);
+  const [adminUser, setAdminUser] = useState<User | null>(null);
+
+  // Detect optional serverless API (/api/telegram, /api/payment) health
   const [serverlessHealth, setServerlessHealth] = useState<ServerlessHealthInfo | null>(null);
 
-  const loadStorefront = useCallback(async () => {
-    try {
-      const res = await fetch('/api/storefront', {
-        headers: { Accept: 'application/json' },
-      });
-      const contentType = res.headers.get('content-type') || '';
-      if (!res.ok || !contentType.includes('application/json')) {
-        throw new Error('Static hosting detected');
-      }
-      const data = (await res.json()) as StorefrontPayload;
-      setIsStaticMode(false);
-      setServerlessHealth(null);
-      setStorefront(data);
-
-      // Respect store default theme if visitor hasn't explicitly toggled light/dark
-      if (!userToggledTheme) {
-        setIsDark(data.settings.theme.defaultMode === 'dark');
-      }
-
-      // Open specific product if shared via ?produk=slug SEO link
-      const params = new URLSearchParams(window.location.search);
-      const slug = params.get('produk');
-      if (slug) {
-        const matched = data.products.find((p) => p.slug === slug);
-        if (matched) setSelectedProduct(matched);
-      }
-    } catch {
-      // Automatic fallback for Vercel Serverless or GitHub Pages static hosting
-      let detectedHealth: ServerlessHealthInfo | null = null;
-      try {
-        const healthRes = await fetch('/api/health', {
-          headers: { Accept: 'application/json' },
-        });
-        const healthType = healthRes.headers.get('content-type') || '';
-        if (healthRes.ok && healthType.includes('application/json')) {
-          const healthData = (await healthRes.json()) as ServerlessHealthInfo;
-          if (healthData?.ok) {
-            detectedHealth = healthData;
-          }
-        }
-      } catch {
-        detectedHealth = null;
-      }
-
-      const fallback = getStaticStorefrontPayload(detectedHealth?.bankConfig);
-      setIsStaticMode(true);
-      setServerlessHealth(detectedHealth);
-      setStorefront(fallback);
-
-      if (!userToggledTheme) {
-        setIsDark(fallback.settings.theme.defaultMode === 'dark');
-      }
-
-      const params = new URLSearchParams(window.location.search);
-      const slug = params.get('produk');
-      if (slug) {
-        const matched = fallback.products.find((p) => p.slug === slug);
-        if (matched) setSelectedProduct(matched);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [userToggledTheme]);
-
   useEffect(() => {
-    loadStorefront();
-  }, [loadStorefront]);
+    let active = true;
+    fetch('/api/health', { headers: { Accept: 'application/json' } })
+      .then(async (res) => {
+        const contentType = res.headers.get('content-type') || '';
+        if (!res.ok || !contentType.includes('application/json')) return null;
+        return (await res.json()) as ServerlessHealthInfo;
+      })
+      .then((health) => {
+        if (active && health?.ok) {
+          setServerlessHealth(health);
+        }
+      })
+      .catch(() => {
+        // Running on pure static host (e.g. GitHub Pages) — Firestore still syncs in real time
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Listen to Firebase Auth state for Admin access
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        setAdminUser(null);
+        setAuthReady(true);
+        return;
+      }
+      const allowed = await verifyAdminAccess(user);
+      if (allowed) {
+        setAdminUser(user);
+        void seedInitialStoreDataIfEmpty(user).catch((err) => {
+          console.error('Failed to seed initial store data:', err);
+        });
+      } else {
+        setAdminUser(null);
+      }
+      setAuthReady(true);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Real-time Firebase Firestore subscription for public storefront (products + theme + SEO + payment)
+  useEffect(() => {
+    const unsubscribe = subscribePublicStorefront(
+      (payload) => {
+        setStorefront(payload);
+        setStoreError(null);
+        setLoading(false);
+
+        if (!userToggledTheme) {
+          setIsDark(payload.settings.theme.defaultMode === 'dark');
+        }
+      },
+      (err) => {
+        setStoreError(err.message);
+        setLoading(false);
+      },
+      serverlessHealth?.bankConfig,
+    );
+
+    return () => unsubscribe();
+  }, [userToggledTheme, serverlessHealth?.bankConfig]);
+
+  // Open specific product if shared via ?produk=slug SEO link
+  useEffect(() => {
+    if (!storefront || deepLinkHandled) return;
+    const params = new URLSearchParams(window.location.search);
+    const slug = params.get('produk');
+    if (slug) {
+      const matched = storefront.products.find((p) => p.slug === slug || p.id === slug);
+      if (matched) setSelectedProduct(matched);
+    }
+    setDeepLinkHandled(true);
+  }, [storefront, deepLinkHandled]);
 
   // Apply Dark Mode class to <html>
   useEffect(() => {
@@ -136,7 +155,6 @@ export default function App() {
     root.style.setProperty('--store-accent-hover', darkenHex(theme.accentColor));
     root.style.setProperty('--store-radius', getRadiusPx(theme.cornerStyle));
 
-    // Dynamic SEO metadata sync
     document.title = seo.metaTitle || theme.storeName;
     updateMetaTag('meta[name="description"]', 'name', 'description', seo.metaDescription);
     updateMetaTag('meta[name="keywords"]', 'name', 'keywords', seo.keywords);
@@ -157,7 +175,6 @@ export default function App() {
     }
     canonicalLink.setAttribute('href', canonicalHref);
 
-    // Update Schema.org JSON-LD with live products
     const jsonLdEl = document.getElementById('store-jsonld');
     if (jsonLdEl) {
       const schema = {
@@ -169,7 +186,7 @@ export default function App() {
         email: theme.contactEmail,
         inLanguage: 'id-ID',
         currenciesAccepted: 'IDR',
-        paymentAccepted: 'QRIS, Virtual Account, E-Wallet',
+        paymentAccepted: 'Transfer Bank, QRIS, Virtual Account, E-Wallet',
         hasOfferCatalog: {
           '@type': 'OfferCatalog',
           name: `Katalog ${theme.storeName}`,
@@ -248,25 +265,20 @@ export default function App() {
   };
 
   const handleAdminLogout = async () => {
-    if (adminToken) {
-      await fetch('/api/admin/auth/logout', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${adminToken}` },
-      }).catch(() => {});
-    }
-    setAdminToken(null);
+    await signOutAdmin().catch(() => {});
+    setAdminUser(null);
   };
 
   const cartCount = cart.reduce((acc, item) => acc + item.quantity, 0);
 
   // Admin Workspace Route
   if (route === 'admin') {
-    if (!adminToken) {
+    if (!authReady || !adminUser) {
       return (
         <AdminAuthGate
           storeName={storefront?.settings.theme.storeName || 'Karsa Digital'}
-          isStaticMode={isStaticMode}
-          onAuthenticated={(token) => setAdminToken(token)}
+          authReady={authReady}
+          onAuthenticated={(user) => setAdminUser(user)}
           onBackToStore={() => setRoute('storefront')}
         />
       );
@@ -274,14 +286,12 @@ export default function App() {
 
     return (
       <AdminDashboard
-        adminToken={adminToken}
-        isStaticMode={isStaticMode}
+        adminEmail={adminUser.email || 'Admin'}
         serverlessHealth={serverlessHealth}
         isDark={isDark}
         onToggleTheme={handleToggleTheme}
         onExitAdmin={() => setRoute('storefront')}
         onLogout={handleAdminLogout}
-        onStorefrontChanged={loadStorefront}
       />
     );
   }
@@ -298,7 +308,14 @@ export default function App() {
         onOpenAdmin={() => setRoute('admin')}
       />
 
-      {loading || !storefront ? (
+      {storeError ? (
+        <div className="mx-auto max-w-xl px-4 py-20 text-center">
+          <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-sm text-red-800 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200">
+            <p className="font-semibold">Gagal terhubung ke database real-time.</p>
+            <p className="mt-1 text-xs opacity-90">{storeError}</p>
+          </div>
+        </div>
+      ) : loading || !storefront ? (
         <div className="mx-auto max-w-[1200px] space-y-10 px-4 py-16 sm:px-6 lg:px-8">
           <div className="grid gap-8 lg:grid-cols-12">
             <div className="space-y-4 lg:col-span-6">
@@ -337,7 +354,6 @@ export default function App() {
 
           <CartCheckoutDrawer
             open={cartOpen}
-            isStaticMode={isStaticMode}
             serverlessAvailable={Boolean(serverlessHealth?.ok)}
             storeName={storefront.settings.theme.storeName}
             paymentSettings={storefront.settings.payment}
@@ -347,7 +363,6 @@ export default function App() {
             onUpdateQuantity={handleUpdateQuantity}
             onRemoveItem={handleRemoveItem}
             onClearCart={() => setCart([])}
-            onOrderCompleted={loadStorefront}
           />
         </>
       )}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -12,7 +12,6 @@ import {
   Package,
   Palette,
   Plus,
-  RefreshCw,
   Search,
   Send,
   ShieldCheck,
@@ -28,10 +27,11 @@ import {
   formatPaymentMethodLabel,
 } from '../lib/format';
 import {
-  deleteStaticProduct,
-  getStaticAdminOverview,
-  saveStaticProduct,
-} from '../lib/staticFallback';
+  adjustFirestoreProductStock,
+  appendFirestoreTelegramLog,
+  deleteFirestoreProduct,
+  subscribeAdminOverview,
+} from '../lib/firestoreStore';
 import { ProductEditorModal } from './ProductEditorModal';
 import { OrderVerificationModal } from './OrderVerificationModal';
 import { ThemeEditorPanel } from './ThemeEditorPanel';
@@ -58,14 +58,12 @@ export interface ServerlessHealthInfo {
 type AdminTab = 'orders' | 'products' | 'payment' | 'theme' | 'telegram' | 'deploy';
 
 interface AdminDashboardProps {
-  adminToken: string;
-  isStaticMode?: boolean;
+  adminEmail: string;
   serverlessHealth?: ServerlessHealthInfo | null;
   isDark: boolean;
   onToggleTheme: () => void;
   onExitAdmin: () => void;
   onLogout: () => void;
-  onStorefrontChanged: () => void;
 }
 
 const TAB_ITEMS: Array<{ id: AdminTab; label: string; icon: typeof ShoppingCart }> = [
@@ -78,14 +76,12 @@ const TAB_ITEMS: Array<{ id: AdminTab; label: string; icon: typeof ShoppingCart 
 ];
 
 export function AdminDashboard({
-  adminToken,
-  isStaticMode = false,
+  adminEmail,
   serverlessHealth = null,
   isDark,
   onToggleTheme,
   onExitAdmin,
   onLogout,
-  onStorefrontChanged,
 }: AdminDashboardProps) {
   const [activeTab, setActiveTab] = useState<AdminTab>('orders');
   const [overview, setOverview] = useState<AdminOverviewPayload | null>(null);
@@ -104,63 +100,37 @@ export function AdminDashboard({
   const [verificationNotice, setVerificationNotice] = useState<string | null>(null);
   const [busyActionId, setBusyActionId] = useState<string | null>(null);
 
-  const fetchOverview = useCallback(async () => {
-    if (isStaticMode) {
-      setOverview(getStaticAdminOverview(serverlessHealth ?? undefined));
-      setError(null);
-      setLoading(false);
-      return;
-    }
-
-    try {
-      const res = await fetch('/api/admin/overview', {
-        headers: { Authorization: `Bearer ${adminToken}` },
-      });
-      if (res.status === 401) {
-        onLogout();
-        return;
-      }
-      const data = (await res.json()) as AdminOverviewPayload & { error?: string };
-      if (!res.ok) throw new Error(data.error || 'Gagal memuat dasbor admin.');
-      setOverview(data);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Gagal memuat data.');
-    } finally {
-      setLoading(false);
-    }
-  }, [adminToken, isStaticMode, serverlessHealth, onLogout]);
-
+  // Live Firestore real-time subscription across products, orders, settings, and Telegram logs
   useEffect(() => {
-    fetchOverview();
-  }, [fetchOverview]);
+    const unsubscribe = subscribeAdminOverview(
+      (payload) => {
+        setOverview(payload);
+        setError(null);
+        setLoading(false);
+      },
+      (err) => {
+        setError(err.message);
+        setLoading(false);
+      },
+      serverlessHealth,
+    );
+    return () => unsubscribe();
+  }, [serverlessHealth]);
 
-  const handleRefreshAll = async () => {
-    await fetchOverview();
-    onStorefrontChanged();
-  };
+  // Keep verifyingOrder modal in sync with real-time order changes
+  const liveVerifyingOrder = useMemo(() => {
+    if (!verifyingOrder || !overview) return verifyingOrder;
+    return overview.orders.find((o) => o.id === verifyingOrder.id) || verifyingOrder;
+  }, [verifyingOrder, overview]);
 
   const handleAdjustStock = async (product: Product, delta: number) => {
     if (product.unlimitedStock) return;
     const nextStock = Math.max(0, product.stock + delta);
     setBusyActionId(product.id);
     try {
-      if (isStaticMode) {
-        saveStaticProduct(product.id, { stock: nextStock });
-        await handleRefreshAll();
-        return;
-      }
-      const res = await fetch(`/api/admin/products/${encodeURIComponent(product.id)}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify({ stock: nextStock }),
-      });
-      if (res.ok) {
-        await handleRefreshAll();
-      }
+      await adjustFirestoreProductStock(product.id, nextStock);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal memperbarui stok produk.');
     } finally {
       setBusyActionId(null);
     }
@@ -169,36 +139,80 @@ export function AdminDashboard({
   const handleDeleteProduct = async (product: Product) => {
     setBusyActionId(product.id);
     try {
-      if (isStaticMode) {
-        deleteStaticProduct(product.id);
-        await handleRefreshAll();
-        return;
-      }
-      const res = await fetch(`/api/admin/products/${encodeURIComponent(product.id)}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${adminToken}` },
-      });
-      if (res.ok) {
-        await handleRefreshAll();
-      }
+      await deleteFirestoreProduct(product.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal menghapus produk.');
     } finally {
       setBusyActionId(null);
     }
   };
 
   const handleResendTelegram = async (order: Order) => {
-    if (isStaticMode) return;
+    if (!serverlessHealth?.ok || !overview) {
+      setVerificationNotice(
+        'Notifikasi Telegram memerlukan deployment Vercel/Server dengan TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID.',
+      );
+      return;
+    }
     setBusyActionId(`tg-${order.id}`);
     try {
-      const res = await fetch(
-        `/api/admin/orders/${encodeURIComponent(order.id)}/resend-telegram`,
-        {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${adminToken}` },
-        },
-      );
-      if (res.ok) {
-        await fetchOverview();
+      const event =
+        order.status === 'PAID'
+          ? 'order_paid'
+          : order.status === 'PAYMENT_SUBMITTED'
+            ? 'transfer_submitted'
+            : 'order_created';
+      const origin = window.location.origin;
+      const downloadLinks =
+        event === 'order_paid'
+          ? order.items.map((item) => ({
+              title: item.title,
+              fileName: item.fileName,
+              url: `${origin}/?invoice=${encodeURIComponent(order.invoiceCode)}&produk=${encodeURIComponent(item.productId)}`,
+            }))
+          : undefined;
+
+      const res = await fetch('/api/telegram', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event,
+          storeName: overview.settings.theme.storeName,
+          invoiceCode: order.invoiceCode,
+          customerName: order.customerName,
+          customerEmail: order.customerEmail,
+          customerPhone: order.customerPhone,
+          paymentMethod: order.paymentMethod,
+          paymentReference: order.paymentReference,
+          totalAmount: order.totalAmount,
+          adminBankName: order.adminBankName,
+          adminBankNumber: order.adminBankNumber,
+          adminBankHolder: order.adminBankHolder,
+          adminTransferAmount: order.adminTransferAmount,
+          transferProofNote: order.transferProofNote,
+          items: order.items,
+          downloadLinks,
+          chatIdOverride: overview.settings.telegram.customChatIdOverride || undefined,
+          messageHeader: overview.settings.telegram.messageHeader,
+        }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | { status?: 'sent' | 'not_configured' | 'failed'; detail?: string; preview?: string }
+        | null;
+
+      if (data?.status) {
+        await appendFirestoreTelegramLog({
+          event,
+          orderId: order.id,
+          status: data.status,
+          detail: data.detail || 'Pengiriman ulang notifikasi',
+          preview: data.preview || `Invoice ${order.invoiceCode}`,
+        });
+        setVerificationNotice(
+          data.status === 'sent'
+            ? `Notifikasi Telegram untuk ${order.invoiceCode} berhasil dikirim ulang.`
+            : data.detail || 'Gagal mengirim ulang notifikasi Telegram.',
+        );
       }
     } finally {
       setBusyActionId(null);
@@ -272,6 +286,9 @@ export function AdminDashboard({
         </nav>
 
         <div className="space-y-1.5 border-t border-slate-200 p-3 dark:border-zinc-800">
+          <p className="truncate px-3 py-1 font-mono text-[11px] text-slate-500 dark:text-zinc-400">
+            {adminEmail}
+          </p>
           <button
             type="button"
             onClick={onToggleTheme}
@@ -312,14 +329,6 @@ export function AdminDashboard({
           </div>
 
           <div className="flex items-center gap-2.5 shrink-0">
-            <button
-              type="button"
-              onClick={handleRefreshAll}
-              className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
-            >
-              <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-              <span className="hidden sm:inline">Muat Ulang</span>
-            </button>
             <button
               type="button"
               onClick={() => {
@@ -452,7 +461,7 @@ export function AdminDashboard({
                               {submittedQueue.length} pesanan telah mengirimkan konfirmasi transfer
                             </p>
                             <p className="mt-0.5 text-blue-800 dark:text-blue-200">
-                              Verifikasi mutasi secara instan untuk langsung mengirim link produk otomatis via Telegram.
+                              Verifikasi mutasi secara instan untuk langsung membuka tautan unduhan pembeli secara real-time dan mengirim link produk via Telegram.
                             </p>
                           </div>
                         </div>
@@ -509,7 +518,7 @@ export function AdminDashboard({
 
                     {filteredOrders.length === 0 ? (
                       <div className="py-12 text-center text-sm text-slate-500 dark:text-zinc-400">
-                        Belum ada pesanan yang sesuai filter.
+                        Belum ada pesanan yang sesuai filter. Pesanan baru akan muncul secara otomatis di sini secara real-time.
                       </div>
                     ) : (
                       <div className="overflow-x-auto">
@@ -652,7 +661,7 @@ export function AdminDashboard({
                         Katalog Produk &amp; Manajemen Stok
                       </h2>
                       <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
-                        Unggah file produk, atur harga, kategori, atau ubah jumlah stok langsung dari tabel.
+                        Semua perubahan harga, stok, dan produk tersimpan langsung di database cloud dan tampil real-time di toko.
                       </p>
                     </div>
                     <div className="relative">
@@ -795,10 +804,7 @@ export function AdminDashboard({
                 <PaymentSettingsPanel
                   payment={overview.settings.payment}
                   status={overview.paymentStatus}
-                  adminToken={adminToken}
-                  isStaticMode={isStaticMode}
                   serverlessAvailable={Boolean(serverlessHealth?.ok)}
-                  onSaved={handleRefreshAll}
                 />
               )}
 
@@ -807,9 +813,6 @@ export function AdminDashboard({
                 <ThemeEditorPanel
                   theme={overview.settings.theme}
                   seo={overview.settings.seo}
-                  adminToken={adminToken}
-                  isStaticMode={isStaticMode}
-                  onSaved={handleRefreshAll}
                 />
               )}
 
@@ -820,14 +823,11 @@ export function AdminDashboard({
                   preferences={overview.settings.telegram}
                   status={overview.telegramStatus}
                   logs={overview.telegramLogs}
-                  adminToken={adminToken}
-                  isStaticMode={isStaticMode}
                   serverlessAvailable={Boolean(serverlessHealth?.ok)}
-                  onUpdated={fetchOverview}
                 />
               )}
 
-              {/* TAB 5: DEPLOY & SEO */}
+              {/* TAB 6: DEPLOY & SEO */}
               {activeTab === 'deploy' && (
                 <DeploySeoPanel
                   seo={overview.settings.seo}
@@ -846,28 +846,23 @@ export function AdminDashboard({
           open={editorOpen}
           product={editingProduct}
           categories={overview.settings.categories}
-          adminToken={adminToken}
-          isStaticMode={isStaticMode}
           onClose={() => {
             setEditorOpen(false);
             setEditingProduct(null);
           }}
-          onSaved={handleRefreshAll}
         />
       )}
 
       {/* Manual Order Verification & Automatic Telegram Link Delivery Modal */}
-      {overview && verifyingOrder && (
+      {overview && liveVerifyingOrder && (
         <OrderVerificationModal
-          order={verifyingOrder}
+          order={liveVerifyingOrder}
           storeName={overview.settings.theme.storeName}
-          adminToken={adminToken}
-          isStaticMode={isStaticMode}
+          telegramPrefs={overview.settings.telegram}
           serverlessAvailable={Boolean(serverlessHealth?.ok)}
           onClose={() => setVerifyingOrder(null)}
           onVerified={(notice) => {
             setVerificationNotice(notice);
-            void handleRefreshAll();
           }}
         />
       )}

@@ -9,21 +9,19 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import type { Order } from '../types/store';
+import type { Order, TelegramPreferences } from '../types/store';
 import { formatDateTimeID, formatIDR, formatPaymentMethodLabel } from '../lib/format';
 import {
-  appendStaticTelegramLog,
-  confirmStaticOrderPayment,
-  loadStaticDb,
-  updateStaticOrder,
-  updateStaticOrderStatus,
-} from '../lib/staticFallback';
+  adminCancelFirestoreOrder,
+  adminConfirmFirestoreOrderPaid,
+  adminSendFirestoreBankDetails,
+  appendFirestoreTelegramLog,
+} from '../lib/firestoreStore';
 
 interface OrderVerificationModalProps {
   order: Order;
   storeName: string;
-  adminToken: string;
-  isStaticMode?: boolean;
+  telegramPrefs: TelegramPreferences;
   serverlessAvailable?: boolean;
   onClose: () => void;
   onVerified: (notice: string) => void;
@@ -32,8 +30,7 @@ interface OrderVerificationModalProps {
 export function OrderVerificationModal({
   order,
   storeName,
-  adminToken,
-  isStaticMode = false,
+  telegramPrefs,
   serverlessAvailable = false,
   onClose,
   onVerified,
@@ -72,36 +69,16 @@ export function OrderVerificationModal({
 
     setBusy('bank');
     try {
-      if (isStaticMode) {
-        updateStaticOrder(order.id, {
-          adminBankName: cleanBank,
-          adminBankNumber: cleanDigits,
-          adminBankHolder: bankHolder.trim(),
-          adminTransferAmount: parsedAmount,
-          status: order.status === 'AWAITING_BANK' ? 'PENDING' : order.status,
-        });
-        setBankSentMsg('Detail rekening disimpan dan siap dilihat pembeli.');
-        onVerified(`Detail rekening ${cleanBank} (${cleanDigits}) berhasil dikirim untuk ${order.invoiceCode}.`);
-        return;
-      }
-
-      const res = await fetch(`/api/admin/orders/${encodeURIComponent(order.id)}/bank-details`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify({
-          bankName: cleanBank,
-          accountNumber: cleanDigits,
-          accountHolder: bankHolder.trim(),
-          amount: parsedAmount,
-        }),
+      await adminSendFirestoreBankDetails(order.id, order.status, {
+        bankName: cleanBank,
+        accountNumber: cleanDigits,
+        accountHolder: bankHolder.trim(),
+        amount: parsedAmount,
       });
-      const data = (await res.json()) as { error?: string };
-      if (!res.ok) throw new Error(data.error || 'Gagal menyimpan detail rekening.');
-      setBankSentMsg('Detail rekening berhasil dikirim ke layar pembeli.');
-      onVerified(`Detail rekening ${cleanBank} (${cleanDigits}) berhasil dikirim untuk ${order.invoiceCode}.`);
+      setBankSentMsg('Detail rekening langsung tampil secara real-time di layar pembeli.');
+      onVerified(
+        `Detail rekening ${cleanBank} (${cleanDigits}) berhasil dikirim real-time untuk ${order.invoiceCode}.`,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Gagal mengirim detail rekening.');
     } finally {
@@ -115,91 +92,66 @@ export function OrderVerificationModal({
     const cleanedNote = extraDeliveryNote.trim().slice(0, 300);
 
     try {
-      if (isStaticMode) {
-        const paidOrder = confirmStaticOrderPayment(order.id);
-        let telegramInfo = 'Status pesanan diubah menjadi Lunas.';
+      let tgStatus: Order['telegramStatus'] = order.telegramStatus;
+      let tgDetail = 'Pesanan diverifikasi Lunas dari Dasbor Admin.';
+      let telegramInfo = `Pesanan ${order.invoiceCode} diverifikasi Lunas & tautan unduhan pembeli langsung terbuka secara real-time.`;
 
-        if (serverlessAvailable) {
-          const staticPrefs = loadStaticDb().settings.telegram;
-          const origin = window.location.origin;
-          const downloadLinks = paidOrder.items.map((item) => ({
-            title: item.title,
-            fileName: item.fileName,
-            url: `${origin}/?invoice=${encodeURIComponent(paidOrder.invoiceCode)}&produk=${encodeURIComponent(item.productId)}`,
-          }));
+      if (serverlessAvailable) {
+        const origin = window.location.origin;
+        const downloadLinks = order.items.map((item) => ({
+          title: item.title,
+          fileName: item.fileName,
+          url: `${origin}/?invoice=${encodeURIComponent(order.invoiceCode)}&produk=${encodeURIComponent(item.productId)}`,
+        }));
 
-          const tgRes = await fetch('/api/telegram', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              event: 'order_paid',
-              storeName,
-              invoiceCode: paidOrder.invoiceCode,
-              customerName: paidOrder.customerName,
-              customerEmail: paidOrder.customerEmail,
-              customerPhone: paidOrder.customerPhone,
-              paymentMethod: paidOrder.paymentMethod,
-              paymentReference: paidOrder.paymentReference,
-              totalAmount: paidOrder.totalAmount,
-              adminTransferAmount: paidOrder.adminTransferAmount,
-              items: paidOrder.items,
-              downloadLinks,
-              extraDeliveryNote: cleanedNote || undefined,
-              chatIdOverride: staticPrefs.customChatIdOverride || undefined,
-              messageHeader: staticPrefs.messageHeader,
-            }),
+        const tgRes = await fetch('/api/telegram', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event: 'order_paid',
+            storeName,
+            invoiceCode: order.invoiceCode,
+            customerName: order.customerName,
+            customerEmail: order.customerEmail,
+            customerPhone: order.customerPhone,
+            paymentMethod: order.paymentMethod,
+            paymentReference: order.paymentReference,
+            totalAmount: order.totalAmount,
+            adminTransferAmount: order.adminTransferAmount,
+            items: order.items,
+            downloadLinks,
+            extraDeliveryNote: cleanedNote || undefined,
+            chatIdOverride: telegramPrefs.customChatIdOverride || undefined,
+            messageHeader: telegramPrefs.messageHeader,
+          }),
+        });
+        const tgData = (await tgRes.json().catch(() => null)) as
+          | { status?: 'sent' | 'not_configured' | 'failed'; detail?: string; preview?: string }
+          | null;
+
+        if (tgData?.status) {
+          tgStatus = tgData.status;
+          tgDetail = tgData.detail || tgDetail;
+          await appendFirestoreTelegramLog({
+            event: 'order_paid',
+            orderId: order.id,
+            status: tgData.status,
+            detail: tgDetail,
+            preview: tgData.preview || `Invoice ${order.invoiceCode} LUNAS`,
           });
-          const tgData = (await tgRes.json().catch(() => null)) as
-            | { status?: 'sent' | 'not_configured' | 'failed'; detail?: string; preview?: string }
-            | null;
-
-          if (tgData?.status) {
-            updateStaticOrder(paidOrder.id, {
-              telegramStatus: tgData.status,
-              telegramMessage: tgData.detail || '',
-            });
-            appendStaticTelegramLog({
-              id: `tg-${Date.now()}`,
-              timestamp: new Date().toISOString(),
-              event: 'order_paid',
-              orderId: paidOrder.id,
-              status: tgData.status,
-              detail: tgData.detail || '',
-              preview: tgData.preview || `Invoice ${paidOrder.invoiceCode} LUNAS`,
-            });
-            telegramInfo =
-              tgData.status === 'sent'
-                ? `Pesanan ${paidOrder.invoiceCode} diverifikasi Lunas & tautan produk otomatis terkirim ke Telegram.`
-                : `Pesanan ${paidOrder.invoiceCode} diverifikasi Lunas (${tgData.detail || 'Telegram belum terkonfigurasi'}).`;
-          }
+          telegramInfo =
+            tgData.status === 'sent'
+              ? `Pesanan ${order.invoiceCode} diverifikasi Lunas, tautan pembeli langsung terbuka real-time, & link produk otomatis terkirim via Telegram.`
+              : `Pesanan ${order.invoiceCode} diverifikasi Lunas & terbuka real-time (${tgData.detail || 'cek pengaturan Telegram'}).`;
         }
-
-        onVerified(telegramInfo);
-        onClose();
-        return;
       }
 
-      const res = await fetch(`/api/admin/orders/${encodeURIComponent(order.id)}/confirm-paid`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify({ extraDeliveryNote: cleanedNote }),
+      await adminConfirmFirestoreOrderPaid(order, {
+        status: tgStatus,
+        detail: tgDetail,
       });
-      const data = (await res.json()) as {
-        telegramResult?: { status?: string; detail?: string };
-        error?: string;
-      };
-      if (!res.ok) {
-        throw new Error(data.error || 'Gagal memverifikasi pesanan.');
-      }
 
-      const tgOk = data.telegramResult?.status === 'sent';
-      const notice = tgOk
-        ? `Pesanan ${order.invoiceCode} diverifikasi Lunas & link unduhan produk otomatis terkirim ke Telegram.`
-        : `Pesanan ${order.invoiceCode} diverifikasi Lunas (${data.telegramResult?.detail || 'cek pengaturan Telegram'}).`;
-      onVerified(notice);
+      onVerified(telegramInfo);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Gagal memverifikasi pesanan.');
@@ -212,24 +164,8 @@ export function OrderVerificationModal({
     setError(null);
     setBusy('cancel');
     try {
-      if (isStaticMode) {
-        updateStaticOrderStatus(order.id, 'CANCELLED');
-        onVerified(`Pesanan ${order.invoiceCode} dibatalkan.`);
-        onClose();
-        return;
-      }
-
-      const res = await fetch(`/api/admin/orders/${encodeURIComponent(order.id)}/status`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify({ status: 'CANCELLED' }),
-      });
-      const data = (await res.json()) as { error?: string };
-      if (!res.ok) throw new Error(data.error || 'Gagal membatalkan pesanan.');
-      onVerified(`Pesanan ${order.invoiceCode} telah dibatalkan.`);
+      await adminCancelFirestoreOrder(order.id);
+      onVerified(`Pesanan ${order.invoiceCode} telah dibatalkan secara real-time.`);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Gagal membatalkan pesanan.');
@@ -351,11 +287,11 @@ export function OrderVerificationModal({
             ) : null}
           </div>
 
-          {/* Optional: Send Bank Details directly from Dashboard if still AWAITING_BANK */}
+          {/* Send Bank Details directly from Dashboard (syncs live to buyer screen!) */}
           {order.status === 'AWAITING_BANK' && (
             <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
               <p className="text-xs font-bold text-slate-900 dark:text-zinc-100">
-                Kirim Detail Rekening ke Pembeli (Opsional selain Reply Telegram)
+                Kirim Detail Rekening ke Layar Pembeli (Real-Time)
               </p>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <div>
@@ -424,7 +360,7 @@ export function OrderVerificationModal({
           <div className="space-y-2.5">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-zinc-200">
               <Link2 className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" aria-hidden="true" />
-              <span>Link Produk yang Akan Dikirim Otomatis via Telegram</span>
+              <span>Link Produk yang Akan Dibuka Real-Time &amp; Dikirim via Telegram</span>
             </div>
             <div className="divide-y divide-slate-200 rounded-lg border border-slate-200 bg-white text-xs dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-900">
               {order.items.map((item) => (

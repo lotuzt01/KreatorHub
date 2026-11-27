@@ -7,15 +7,12 @@ import type {
   PaymentSettings,
 } from '../types/store';
 import { isSafeHttpOrLocalUrl } from '../lib/format';
-import { saveStaticSettings } from '../lib/staticFallback';
+import { saveFirestorePublicSettings } from '../lib/firestoreStore';
 
 interface PaymentSettingsPanelProps {
   payment: PaymentSettings;
   status: PaymentGatewayStatus;
-  adminToken: string;
-  isStaticMode?: boolean;
   serverlessAvailable?: boolean;
-  onSaved: () => void;
 }
 
 interface PaymentValidationErrors {
@@ -151,10 +148,7 @@ function validatePaymentDraft(draft: PaymentSettings): {
 export function PaymentSettingsPanel({
   payment,
   status,
-  adminToken,
-  isStaticMode = false,
   serverlessAvailable = false,
-  onSaved,
 }: PaymentSettingsPanelProps) {
   const [draft, setDraft] = useState<PaymentSettings>(payment);
   const [saving, setSaving] = useState(false);
@@ -184,7 +178,6 @@ export function PaymentSettingsPanel({
       return;
     }
 
-    // Normalize whitespace in bank & account fields cleanly before saving
     const normalizedDraft: PaymentSettings = {
       ...draft,
       merchantName: draft.merchantName.trim(),
@@ -203,32 +196,12 @@ export function PaymentSettingsPanel({
 
     setSaving(true);
     try {
-      if (isStaticMode) {
-        saveStaticSettings({ payment: normalizedDraft });
-        setDraft(normalizedDraft);
-        setFeedback({
-          type: 'ok',
-          text: serverlessAvailable
-            ? 'Pengaturan pembayaran valid, disimpan, dan langsung aktif di halaman checkout.'
-            : 'Pengaturan pembayaran valid dan disimpan lokal di browser.',
-        });
-        onSaved();
-        return;
-      }
-
-      const res = await fetch('/api/admin/settings', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify({ payment: normalizedDraft }),
-      });
-      const data = (await res.json()) as { error?: string };
-      if (!res.ok) throw new Error(data.error || 'Gagal menyimpan pengaturan pembayaran.');
+      await saveFirestorePublicSettings({ payment: normalizedDraft });
       setDraft(normalizedDraft);
-      setFeedback({ type: 'ok', text: 'Pengaturan pembayaran berhasil divalidasi dan disimpan.' });
-      onSaved();
+      setFeedback({
+        type: 'ok',
+        text: 'Pengaturan pembayaran valid, disimpan ke database cloud, dan langsung sinkron real-time ke seluruh pembeli.',
+      });
     } catch (err) {
       setFeedback({
         type: 'err',
@@ -247,7 +220,7 @@ export function PaymentSettingsPanel({
             Pengaturan Pembayaran
           </h2>
           <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
-            Atur kanal pembayaran, validasi format nama bank &amp; nomor rekening, serta batas waktu pesanan.
+            Atur kanal pembayaran, validasi format nama bank &amp; nomor rekening, serta batas waktu pesanan secara real-time.
           </p>
         </div>
 
@@ -263,16 +236,15 @@ export function PaymentSettingsPanel({
         </button>
       </div>
 
-      {isStaticMode && !serverlessAvailable && (
+      {!serverlessAvailable && (
         <div className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50/80 p-4 text-xs leading-relaxed text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <div>
             <p className="font-semibold">
-              Anda sedang membuka versi statis GitHub Pages (tanpa server backend).
+              Database real-time aktif — namun endpoint Bot Telegram (/api/telegram) tidak tersedia di hosting statis murni.
             </p>
             <p className="mt-1">
-              Semua pengaturan metode bayar tetap berfungsi di browser ini. Untuk konfirmasi Telegram 2-arah
-              dan pembayaran otomatis nyata gratis, gunakan deployment <strong>Vercel</strong> Anda.
+              Gunakan deployment <strong>Vercel</strong> Anda agar notifikasi Bot Telegram 2-arah aktif bersamaan dengan sinkronisasi database real-time.
             </p>
           </div>
         </div>

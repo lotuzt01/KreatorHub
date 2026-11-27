@@ -1,0 +1,496 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Global Safety Net (Default-Deny Catch-All)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Global Hardened Helpers (Phase 3)
+    // =========================================================================
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    // Zero-DB-read bootstrapped admin check (safe inside allow list)
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'nomigosone@gmail.com';
+    }
+
+    // Full RBAC admin check (bootstrapped admin OR trusted /admins/{uid} document)
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOptionalString(data, field, maxLen) {
+      return !(field in data) || (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    function isOptionalNumber(data, field, minVal) {
+      return !(field in data) || (data[field] is number && data[field] >= minVal);
+    }
+
+    function isValidPaymentMethod(val) {
+      return val in [
+        'telegram_bank',
+        'bank_transfer',
+        'qris',
+        'va_bca',
+        'va_mandiri',
+        'ewallet_gopay',
+        'ewallet_dana'
+      ];
+    }
+
+    function isValidOrderStatus(val) {
+      return val in [
+        'AWAITING_BANK',
+        'PENDING',
+        'PAYMENT_SUBMITTED',
+        'PAID',
+        'CANCELLED'
+      ];
+    }
+
+    // =========================================================================
+    // Entity Validation Blueprints (Pillar 2 & Pillar 5)
+    // =========================================================================
+    function isValidProduct(data, productId) {
+      return data.keys().hasAll([
+          'id', 'slug', 'title', 'category', 'price', 'stock', 'unlimitedStock',
+          'shortDescription', 'description', 'highlights', 'format', 'fileSize',
+          'fileName', 'fileKey', 'coverImage', 'status', 'featured', 'salesCount',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'slug', 'title', 'category', 'price', 'originalPrice', 'stock',
+          'unlimitedStock', 'shortDescription', 'description', 'highlights',
+          'format', 'fileSize', 'fileName', 'fileKey', 'coverImage', 'status',
+          'featured', 'salesCount', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == productId && isValidId(data.id) &&
+        data.slug is string && data.slug.size() >= 1 && data.slug.size() <= 160 &&
+        data.title is string && data.title.size() >= 2 && data.title.size() <= 160 &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 80 &&
+        data.price is number && data.price >= 0 && data.price <= 1000000000 &&
+        isOptionalNumber(data, 'originalPrice', 0) &&
+        data.stock is number && data.stock >= -1 && data.stock <= 1000000 &&
+        data.unlimitedStock is bool &&
+        data.shortDescription is string && data.shortDescription.size() <= 400 &&
+        data.description is string && data.description.size() <= 4000 &&
+        data.highlights is list && data.highlights.size() <= 20 &&
+        (data.highlights.size() == 0 || (data.highlights[0] is string && data.highlights[0].size() <= 240)) &&
+        data.format is string && data.format.size() <= 80 &&
+        data.fileSize is string && data.fileSize.size() <= 40 &&
+        data.fileName is string && data.fileName.size() <= 200 &&
+        data.fileKey is string && data.fileKey.size() <= 200 &&
+        data.coverImage is string && data.coverImage.size() <= 500 &&
+        data.status in ['active', 'draft'] &&
+        data.featured is bool &&
+        data.salesCount is number && data.salesCount >= 0 && data.salesCount <= 10000000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPublicSettings(data) {
+      return data.keys().hasAll(['theme', 'seo', 'payment', 'categories', 'updatedAt']) &&
+        data.keys().hasOnly(['theme', 'seo', 'payment', 'categories', 'updatedAt']) &&
+        data.theme is map &&
+        data.theme.keys().hasAll([
+          'storeName', 'heroEyebrow', 'heroHeadline', 'heroSubheadline', 'heroCtaText',
+          'heroImage', 'accentColor', 'defaultMode', 'cornerStyle', 'gridColumns',
+          'contactEmail', 'footerNotice'
+        ]) &&
+        data.theme.keys().hasOnly([
+          'storeName', 'heroEyebrow', 'heroHeadline', 'heroSubheadline', 'heroCtaText',
+          'heroImage', 'accentColor', 'defaultMode', 'cornerStyle', 'gridColumns',
+          'contactEmail', 'footerNotice'
+        ]) &&
+        data.theme.storeName is string && data.theme.storeName.size() >= 1 && data.theme.storeName.size() <= 100 &&
+        data.theme.heroEyebrow is string && data.theme.heroEyebrow.size() <= 120 &&
+        data.theme.heroHeadline is string && data.theme.heroHeadline.size() <= 240 &&
+        data.theme.heroSubheadline is string && data.theme.heroSubheadline.size() <= 600 &&
+        data.theme.heroCtaText is string && data.theme.heroCtaText.size() <= 60 &&
+        data.theme.heroImage is string && data.theme.heroImage.size() <= 500 &&
+        data.theme.accentColor is string && data.theme.accentColor.size() <= 20 &&
+        data.theme.defaultMode in ['light', 'dark'] &&
+        data.theme.cornerStyle in ['sharp', 'modern', 'soft'] &&
+        data.theme.gridColumns in [2, 3] &&
+        data.theme.contactEmail is string && data.theme.contactEmail.size() <= 160 &&
+        data.theme.footerNotice is string && data.theme.footerNotice.size() <= 300 &&
+        data.seo is map &&
+        data.seo.keys().hasAll(['metaTitle', 'metaDescription', 'keywords', 'canonicalUrl', 'ogSiteName']) &&
+        data.seo.keys().hasOnly(['metaTitle', 'metaDescription', 'keywords', 'canonicalUrl', 'ogSiteName']) &&
+        data.seo.metaTitle is string && data.seo.metaTitle.size() <= 160 &&
+        data.seo.metaDescription is string && data.seo.metaDescription.size() <= 400 &&
+        data.seo.keywords is string && data.seo.keywords.size() <= 400 &&
+        data.seo.canonicalUrl is string && data.seo.canonicalUrl.size() <= 300 &&
+        data.seo.ogSiteName is string && data.seo.ogSiteName.size() <= 100 &&
+        data.payment is map &&
+        data.payment.keys().hasAll([
+          'provider', 'merchantName', 'qrisMerchantId', 'qrisImageUrl',
+          'expiryMinutes', 'autoConfirmDemo', 'methods'
+        ]) &&
+        data.payment.keys().hasOnly([
+          'provider', 'merchantName', 'qrisMerchantId', 'qrisImageUrl',
+          'expiryMinutes', 'autoConfirmDemo', 'methods'
+        ]) &&
+        data.payment.provider in ['builtin_auto', 'midtrans', 'tripay', 'xendit'] &&
+        data.payment.merchantName is string && data.payment.merchantName.size() >= 1 && data.payment.merchantName.size() <= 120 &&
+        data.payment.qrisMerchantId is string && data.payment.qrisMerchantId.size() <= 80 &&
+        data.payment.qrisImageUrl is string && data.payment.qrisImageUrl.size() <= 500 &&
+        data.payment.expiryMinutes is number && data.payment.expiryMinutes >= 5 && data.payment.expiryMinutes <= 1440 &&
+        data.payment.autoConfirmDemo is bool &&
+        data.payment.methods is list && data.payment.methods.size() >= 1 && data.payment.methods.size() <= 10 &&
+        data.payment.methods[0] is map &&
+        data.categories is list && data.categories.size() >= 1 && data.categories.size() <= 30 &&
+        data.categories[0] is string && data.categories[0].size() <= 80 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdminSettings(data) {
+      return data.keys().hasAll([
+          'notifyOnOrderCreated', 'notifyOnOrderPaid', 'notifyOnLowStock',
+          'lowStockThreshold', 'customChatIdOverride', 'messageHeader', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'notifyOnOrderCreated', 'notifyOnOrderPaid', 'notifyOnLowStock',
+          'lowStockThreshold', 'customChatIdOverride', 'messageHeader', 'updatedAt'
+        ]) &&
+        data.notifyOnOrderCreated is bool &&
+        data.notifyOnOrderPaid is bool &&
+        data.notifyOnLowStock is bool &&
+        data.lowStockThreshold is number && data.lowStockThreshold >= 1 && data.lowStockThreshold <= 100 &&
+        data.customChatIdOverride is string && data.customChatIdOverride.size() <= 64 &&
+        data.messageHeader is string && data.messageHeader.size() <= 160 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidOrder(data, orderId) {
+      return data.keys().hasAll([
+          'id', 'invoiceCode', 'buyerSecret', 'customerName', 'customerEmail',
+          'customerPhone', 'paymentMethod', 'paymentReference', 'items',
+          'totalAmount', 'status', 'downloadToken', 'telegramStatus',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'invoiceCode', 'buyerSecret', 'customerName', 'customerEmail',
+          'customerPhone', 'paymentMethod', 'paymentReference', 'items',
+          'totalAmount', 'status', 'downloadToken', 'telegramStatus',
+          'telegramMessage', 'telegramOrderMessageId', 'telegramTransferMessageId',
+          'adminBankName', 'adminBankNumber', 'adminBankHolder', 'adminTransferAmount',
+          'transferProofNote', 'bankSyncSecret', 'transferSyncSecret',
+          'createdAt', 'updatedAt', 'paidAt'
+        ]) &&
+        data.id is string && data.id == orderId && isValidId(data.id) &&
+        data.invoiceCode is string && data.invoiceCode.size() >= 4 && data.invoiceCode.size() <= 64 &&
+        data.buyerSecret is string && data.buyerSecret.size() >= 16 && data.buyerSecret.size() <= 128 &&
+        data.customerName is string && data.customerName.size() >= 2 && data.customerName.size() <= 120 &&
+        data.customerEmail is string && data.customerEmail.size() >= 5 && data.customerEmail.size() <= 160 &&
+        data.customerPhone is string && data.customerPhone.size() >= 6 && data.customerPhone.size() <= 64 &&
+        isValidPaymentMethod(data.paymentMethod) &&
+        data.paymentReference is string && data.paymentReference.size() <= 100 &&
+        data.items is list && data.items.size() >= 1 && data.items.size() <= 20 &&
+        data.items[0] is map &&
+        data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 1000000000 &&
+        isValidOrderStatus(data.status) &&
+        data.downloadToken is string && data.downloadToken.size() <= 128 &&
+        data.telegramStatus in ['sent', 'not_configured', 'failed', 'pending'] &&
+        isOptionalString(data, 'telegramMessage', 500) &&
+        isOptionalNumber(data, 'telegramOrderMessageId', 0) &&
+        isOptionalNumber(data, 'telegramTransferMessageId', 0) &&
+        isOptionalString(data, 'adminBankName', 80) &&
+        isOptionalString(data, 'adminBankNumber', 40) &&
+        isOptionalString(data, 'adminBankHolder', 120) &&
+        isOptionalNumber(data, 'adminTransferAmount', 0) &&
+        isOptionalString(data, 'transferProofNote', 200) &&
+        isOptionalString(data, 'bankSyncSecret', 128) &&
+        isOptionalString(data, 'transferSyncSecret', 128) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        (!('paidAt' in data) || data.paidAt is timestamp);
+    }
+
+    function isValidOrderStatusDoc(data, orderId) {
+      return data.keys().hasAll([
+          'orderId', 'invoiceCode', 'paymentMethod', 'status',
+          'totalAmount', 'downloadReady', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'orderId', 'invoiceCode', 'paymentMethod', 'status',
+          'totalAmount', 'adminBankName', 'adminBankNumber', 'adminBankHolder',
+          'adminTransferAmount', 'transferProofNote', 'downloadReady',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.orderId is string && data.orderId == orderId && isValidId(data.orderId) &&
+        data.invoiceCode is string && data.invoiceCode.size() >= 4 && data.invoiceCode.size() <= 64 &&
+        isValidPaymentMethod(data.paymentMethod) &&
+        isValidOrderStatus(data.status) &&
+        data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 1000000000 &&
+        isOptionalString(data, 'adminBankName', 80) &&
+        isOptionalString(data, 'adminBankNumber', 40) &&
+        isOptionalString(data, 'adminBankHolder', 120) &&
+        isOptionalNumber(data, 'adminTransferAmount', 0) &&
+        isOptionalString(data, 'transferProofNote', 200) &&
+        data.downloadReady is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTelegramLog(data, logId) {
+      return data.keys().hasAll(['id', 'timestamp', 'event', 'status', 'detail', 'preview']) &&
+        data.keys().hasOnly(['id', 'timestamp', 'event', 'orderId', 'status', 'detail', 'preview']) &&
+        data.id is string && data.id == logId && isValidId(data.id) &&
+        data.timestamp is timestamp &&
+        data.event in ['order_created', 'transfer_submitted', 'order_paid', 'low_stock', 'test', 'help'] &&
+        isOptionalString(data, 'orderId', 128) &&
+        data.status in ['sent', 'not_configured', 'failed'] &&
+        data.detail is string && data.detail.size() <= 300 &&
+        data.preview is string && data.preview.size() <= 1500;
+    }
+
+    function isValidAdminUser(data, uid) {
+      return data.keys().hasAll(['uid', 'email', 'role', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'role', 'createdAt']) &&
+        data.uid is string && data.uid == uid && isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 5 && data.email.size() <= 160 &&
+        data.role == 'admin' &&
+        data.createdAt is timestamp;
+    }
+
+    // =========================================================================
+    // Collection Rules (Denial-of-Wallet Order: Auth -> Static -> Relational)
+    // =========================================================================
+
+    // 1. Products Catalog
+    match /products/{productId} {
+      allow get: if isValidId(productId) && (existing().status == 'active' || isAdmin());
+      allow list: if existing().status == 'active' || isBootstrappedAdmin();
+
+      allow create: if isVerifiedUser() &&
+        isValidId(productId) &&
+        isValidProduct(incoming(), productId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(productId) &&
+        isValidProduct(incoming(), productId) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow delete: if isVerifiedUser() && isValidId(productId) && isAdmin();
+    }
+
+    // 2. Public Storefront Settings (/publicSettings/store)
+    match /publicSettings/{configId} {
+      allow get: if isValidId(configId) && configId == 'store';
+      allow list: if false;
+
+      allow create: if isVerifiedUser() &&
+        isValidId(configId) &&
+        configId == 'store' &&
+        isValidPublicSettings(incoming()) &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(configId) &&
+        configId == 'store' &&
+        isValidPublicSettings(incoming()) &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow delete: if false;
+    }
+
+    // 3. Admin-Only Settings (/adminSettings/telegram)
+    match /adminSettings/{configId} {
+      allow get: if isVerifiedUser() && isValidId(configId) && configId == 'telegram' && isAdmin();
+      allow list: if false;
+
+      allow create: if isVerifiedUser() &&
+        isValidId(configId) &&
+        configId == 'telegram' &&
+        isValidAdminSettings(incoming()) &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(configId) &&
+        configId == 'telegram' &&
+        isValidAdminSettings(incoming()) &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow delete: if false;
+    }
+
+    // 4. Orders (Contains Buyer PII — Admin-Only Reads; Single-Use Buyer Capability Proof on Updates)
+    match /orders/{orderId} {
+      allow get: if isVerifiedUser() && isValidId(orderId) && isAdmin();
+      allow list: if isBootstrappedAdmin();
+
+      // Buyers create a new unpaid order atomically paired with /orderStatuses/{orderId}
+      allow create: if isValidId(orderId) &&
+        isValidOrder(incoming(), orderId) &&
+        incoming().status in ['AWAITING_BANK', 'PENDING'] &&
+        !('paidAt' in incoming()) &&
+        !('bankSyncSecret' in incoming()) &&
+        !('transferSyncSecret' in incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/orderStatuses/$(orderId)) &&
+        getAfter(/databases/$(database)/documents/orderStatuses/$(orderId)).data.status == incoming().status &&
+        getAfter(/databases/$(database)/documents/orderStatuses/$(orderId)).data.downloadReady == false;
+
+      // Action-Based Update Pattern + Terminal State Locking + Cryptographic Capability Proof
+      allow update: if isValidId(orderId) &&
+        isValidOrder(incoming(), orderId) &&
+        incoming().id == existing().id &&
+        incoming().invoiceCode == existing().invoiceCode &&
+        incoming().buyerSecret == existing().buyerSecret &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          // Tier 1: Admin full order management (send bank details, verify PAID, cancel, resend Telegram)
+          (isVerifiedUser() && isAdmin()) ||
+          // Tier 2A: Buyer holding exact buyerSecret syncs bank instructions received from Telegram (AWAITING_BANK -> PENDING)
+          (
+            existing().status == 'AWAITING_BANK' &&
+            incoming().status == 'PENDING' &&
+            !('bankSyncSecret' in existing()) &&
+            'bankSyncSecret' in incoming() &&
+            incoming().bankSyncSecret == existing().buyerSecret &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'adminBankName', 'adminBankNumber', 'adminBankHolder',
+              'adminTransferAmount', 'bankSyncSecret', 'updatedAt'
+            ]) &&
+            getAfter(/databases/$(database)/documents/orderStatuses/$(orderId)).data.status == 'PENDING' &&
+            getAfter(/databases/$(database)/documents/orderStatuses/$(orderId)).data.downloadReady == false
+          ) ||
+          // Tier 2B: Buyer holding exact buyerSecret submits transfer proof (PENDING -> PAYMENT_SUBMITTED)
+          (
+            existing().status == 'PENDING' &&
+            incoming().status == 'PAYMENT_SUBMITTED' &&
+            !('transferSyncSecret' in existing()) &&
+            'transferSyncSecret' in incoming() &&
+            incoming().transferSyncSecret == existing().buyerSecret &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'transferProofNote', 'telegramStatus', 'telegramMessage',
+              'telegramTransferMessageId', 'transferSyncSecret', 'updatedAt'
+            ]) &&
+            getAfter(/databases/$(database)/documents/orderStatuses/$(orderId)).data.status == 'PAYMENT_SUBMITTED' &&
+            getAfter(/databases/$(database)/documents/orderStatuses/$(orderId)).data.downloadReady == false
+          )
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(orderId) && isAdmin();
+    }
+
+    // 5. OrderStatuses (PII-Free Real-Time Buyer Mirror — Exact ID Get Only, No Public List)
+    match /orderStatuses/{orderId} {
+      allow get: if isValidId(orderId);
+      allow list: if isBootstrappedAdmin();
+
+      allow create: if isValidId(orderId) &&
+        isValidOrderStatusDoc(incoming(), orderId) &&
+        incoming().status in ['AWAITING_BANK', 'PENDING'] &&
+        incoming().downloadReady == false &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/orders/$(orderId));
+
+      allow update: if isValidId(orderId) &&
+        isValidOrderStatusDoc(incoming(), orderId) &&
+        incoming().orderId == existing().orderId &&
+        incoming().invoiceCode == existing().invoiceCode &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          // Tier 1: Admin updates status (including PAID & downloadReady: true)
+          (isVerifiedUser() && isAdmin()) ||
+          // Tier 2A: Synchronized atomically with parent /orders/{orderId} verified by bankSyncSecret
+          (
+            existing().status == 'AWAITING_BANK' &&
+            incoming().status == 'PENDING' &&
+            incoming().downloadReady == false &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'adminBankName', 'adminBankNumber', 'adminBankHolder', 'adminTransferAmount', 'updatedAt'
+            ]) &&
+            getAfter(/databases/$(database)/documents/orders/$(orderId)).data.status == 'PENDING'
+          ) ||
+          // Tier 2B: Synchronized atomically with parent /orders/{orderId} verified by transferSyncSecret
+          (
+            existing().status == 'PENDING' &&
+            incoming().status == 'PAYMENT_SUBMITTED' &&
+            incoming().downloadReady == false &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'transferProofNote', 'updatedAt'
+            ]) &&
+            getAfter(/databases/$(database)/documents/orders/$(orderId)).data.status == 'PAYMENT_SUBMITTED'
+          )
+        );
+
+      allow delete: if isValidId(orderId) && isAdmin();
+    }
+
+    // 6. Telegram Audit Logs (Admin-Only)
+    match /telegramLogs/{logId} {
+      allow get: if isVerifiedUser() && isValidId(logId) && isAdmin();
+      allow list: if isBootstrappedAdmin();
+
+      allow create: if isVerifiedUser() &&
+        isValidId(logId) &&
+        isValidTelegramLog(incoming(), logId) &&
+        incoming().timestamp == request.time &&
+        isAdmin();
+
+      allow update: if false;
+      allow delete: if isVerifiedUser() && isValidId(logId) && isAdmin();
+    }
+
+    // 7. Trusted Admin Registry (Bootstrapped Admin Only)
+    match /admins/{uid} {
+      allow get: if isVerifiedUser() && isValidId(uid) && (isBootstrappedAdmin() || request.auth.uid == uid);
+      allow list: if isBootstrappedAdmin();
+
+      allow create: if isVerifiedUser() &&
+        isValidId(uid) &&
+        isValidAdminUser(incoming(), uid) &&
+        incoming().createdAt == request.time &&
+        isBootstrappedAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(uid) &&
+        isValidAdminUser(incoming(), uid) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        isBootstrappedAdmin();
+
+      allow delete: if isVerifiedUser() && isValidId(uid) && isBootstrappedAdmin();
+    }
+  }
+}

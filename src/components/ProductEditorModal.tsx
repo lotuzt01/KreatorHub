@@ -1,28 +1,22 @@
 import { useState } from 'react';
-import { AlertCircle, Check, FileUp, Image as ImageIcon, Plus, Trash2, X } from 'lucide-react';
+import { AlertCircle, Check, FileUp, Plus, Trash2, X } from 'lucide-react';
 import type { Product } from '../types/store';
 import { PRESET_PRODUCT_COVERS } from '../lib/format';
-import { saveStaticProduct } from '../lib/staticFallback';
+import { saveFirestoreProduct } from '../lib/firestoreStore';
 import { SafeImage } from './SafeImage';
 
 interface ProductEditorModalProps {
   open: boolean;
   product: Product | null;
   categories: string[];
-  adminToken: string;
-  isStaticMode?: boolean;
   onClose: () => void;
-  onSaved: () => void;
 }
 
 export function ProductEditorModal({
   open,
   product,
   categories,
-  adminToken,
-  isStaticMode = false,
   onClose,
-  onSaved,
 }: ProductEditorModalProps) {
   const isEditing = Boolean(product);
 
@@ -53,64 +47,16 @@ export function ProductEditorModal({
   const [status, setStatus] = useState<'active' | 'draft'>(product?.status ?? 'active');
   const [featured, setFeatured] = useState(product?.featured ?? false);
 
-  const [uploadingFile, setUploadingFile] = useState(false);
-  const [uploadingCover, setUploadingCover] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (!open) return null;
 
-  const handleUpload = async (file: File, kind: 'product' | 'cover') => {
-    if (isStaticMode) {
-      if (kind === 'product') {
-        setFileKey(`static-${Date.now()}`);
-        setFileName(file.name);
-        setFileSize(`${Math.max(1, Math.round(file.size / 1024))} KB`);
-      } else {
-        setError('Unggah gambar kustom memerlukan server Node.js. Pilih salah satu sampul studio di bawah pada mode statis.');
-      }
-      return;
-    }
-
+  const handleSelectFile = (file: File) => {
     setError(null);
-    if (kind === 'product') setUploadingFile(true);
-    else setUploadingCover(true);
-
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const res = await fetch(`/api/admin/upload?kind=${kind}`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: formData,
-      });
-      const data = (await res.json()) as {
-        fileKey?: string;
-        fileName?: string;
-        fileSize?: string;
-        url?: string;
-        error?: string;
-      };
-      if (!res.ok) {
-        throw new Error(data.error || 'Unggahan gagal.');
-      }
-
-      if (kind === 'product' && data.fileKey) {
-        setFileKey(data.fileKey);
-        setFileName(data.fileName || file.name);
-        setFileSize(data.fileSize || '');
-      } else if (kind === 'cover' && data.url) {
-        setCoverImage(data.url);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Gagal mengunggah file.');
-    } finally {
-      if (kind === 'product') setUploadingFile(false);
-      else setUploadingCover(false);
-    }
+    setFileKey(`cloud-${Date.now()}`);
+    setFileName(file.name);
+    setFileSize(`${Math.max(1, Math.round(file.size / 1024))} KB`);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -130,7 +76,7 @@ export function ProductEditorModal({
 
     setSaving(true);
     try {
-      const payload = {
+      await saveFirestoreProduct(product, {
         title: title.trim(),
         slug: slug.trim() || undefined,
         category: finalCategory,
@@ -148,36 +94,10 @@ export function ProductEditorModal({
         fileSize,
         status,
         featured,
-      };
-
-      if (isStaticMode) {
-        saveStaticProduct(isEditing ? product!.id : null, payload);
-        onSaved();
-        onClose();
-        return;
-      }
-
-      const endpoint = isEditing
-        ? `/api/admin/products/${encodeURIComponent(product!.id)}`
-        : '/api/admin/products';
-      const method = isEditing ? 'PUT' : 'POST';
-
-      const res = await fetch(endpoint, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify(payload),
       });
-      const data = (await res.json()) as { error?: string };
-      if (!res.ok) {
-        throw new Error(data.error || 'Gagal menyimpan produk.');
-      }
-      onSaved();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Gagal menyimpan produk.');
+      setError(err instanceof Error ? err.message : 'Gagal menyimpan produk ke database cloud.');
     } finally {
       setSaving(false);
     }
@@ -204,7 +124,7 @@ export function ProductEditorModal({
               {isEditing ? 'Edit Produk Digital' : 'Tambah Produk Digital Baru'}
             </h2>
             <p className="text-xs text-slate-500 dark:text-zinc-400">
-              Unggah file digital, atur harga, stok lisensi, dan kategori katalog.
+              Produk yang disimpan langsung tersinkronisasi secara real-time ke seluruh pengunjung.
             </p>
           </div>
           <button
@@ -376,10 +296,10 @@ export function ProductEditorModal({
             </div>
           </div>
 
-          {/* Digital File Upload */}
+          {/* Digital File Metadata */}
           <div className="border-t border-slate-200 pt-5 dark:border-zinc-800">
             <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300">
-              File Produk Digital (Diunduh Pembeli Setelah Lunas)
+              Info File Produk Digital (Diunduh Pembeli Setelah Lunas)
             </label>
             <div className="mt-2 flex flex-col gap-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-zinc-700 dark:bg-zinc-950">
               <div className="min-w-0">
@@ -395,47 +315,37 @@ export function ProductEditorModal({
                   </p>
                 ) : (
                   <p className="text-xs text-slate-500 dark:text-zinc-400">
-                    Mendukung ZIP, PDF, FIG, JSON, DOCX, XLSX, PNG/JPG hingga 25 MB.
+                    Pilih file lokal untuk mencatat nama &amp; ukuran file (ZIP, PDF, FIG, JSON, DOCX, XLSX).
                   </p>
                 )}
               </div>
               <label className="inline-flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 text-xs font-semibold text-slate-800 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800">
                 <FileUp className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>{uploadingFile ? 'Mengunggah...' : 'Unggah File'}</span>
+                <span>Pilih File</span>
                 <input
                   type="file"
                   className="hidden"
-                  disabled={uploadingFile}
                   onChange={(e) => {
                     const selected = e.target.files?.[0];
-                    if (selected) handleUpload(selected, 'product');
+                    if (selected) handleSelectFile(selected);
                   }}
                 />
               </label>
             </div>
           </div>
 
-          {/* Cover Image Upload & Presets */}
+          {/* Cover Image Presets & URL */}
           <div className="border-t border-slate-200 pt-5 dark:border-zinc-800">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <label className="text-xs font-semibold text-slate-700 dark:text-zinc-300">
-                Sampul Produk (Rasio 4:3)
-              </label>
-              <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800">
-                <ImageIcon className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>{uploadingCover ? 'Mengunggah...' : 'Unggah Gambar'}</span>
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  className="hidden"
-                  disabled={uploadingCover}
-                  onChange={(e) => {
-                    const selected = e.target.files?.[0];
-                    if (selected) handleUpload(selected, 'cover');
-                  }}
-                />
-              </label>
-            </div>
+            <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300">
+              Sampul Produk (Pilih Preset Studio atau Masukkan URL HTTPS)
+            </label>
+            <input
+              type="text"
+              value={coverImage}
+              onChange={(e) => setCoverImage(e.target.value)}
+              placeholder="https://... atau pilih preset di bawah"
+              className="mt-2 h-9 w-full rounded-lg border border-slate-300 bg-white px-3 font-mono text-xs text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+            />
 
             <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
               {PRESET_PRODUCT_COVERS.map((preset) => {
@@ -546,7 +456,7 @@ export function ProductEditorModal({
           <button
             type="submit"
             form="product-editor-form"
-            disabled={saving || uploadingFile || uploadingCover}
+            disabled={saving}
             style={{ backgroundColor: 'var(--store-accent)' }}
             className="h-10 cursor-pointer rounded-lg px-5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60"
           >

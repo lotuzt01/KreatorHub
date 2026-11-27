@@ -2,24 +2,15 @@ import { useState } from 'react';
 import { Check, RotateCcw, Save } from 'lucide-react';
 import type { CornerStyle, SeoConfig, ThemeConfig } from '../types/store';
 import { PRESET_ACCENT_COLORS, PRESET_PRODUCT_COVERS, getRadiusPx } from '../lib/format';
-import { saveStaticSettings } from '../lib/staticFallback';
+import { saveFirestorePublicSettings } from '../lib/firestoreStore';
 import { SafeImage } from './SafeImage';
 
 interface ThemeEditorPanelProps {
   theme: ThemeConfig;
   seo: SeoConfig;
-  adminToken: string;
-  isStaticMode?: boolean;
-  onSaved: () => void;
 }
 
-export function ThemeEditorPanel({
-  theme,
-  seo,
-  adminToken,
-  isStaticMode = false,
-  onSaved,
-}: ThemeEditorPanelProps) {
+export function ThemeEditorPanel({ theme, seo }: ThemeEditorPanelProps) {
   const [draftTheme, setDraftTheme] = useState<ThemeConfig>(theme);
   const [draftSeo, setDraftSeo] = useState<SeoConfig>(seo);
   const [previewDark, setPreviewDark] = useState(theme.defaultMode === 'dark');
@@ -32,27 +23,8 @@ export function ThemeEditorPanel({
     setError(null);
     setFeedback(null);
     try {
-      if (isStaticMode) {
-        saveStaticSettings({ theme: draftTheme, seo: draftSeo });
-        setFeedback('Tampilan dan metadata SEO disimpan secara lokal di browser.');
-        onSaved();
-        return;
-      }
-      const res = await fetch('/api/admin/settings', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify({
-          theme: draftTheme,
-          seo: draftSeo,
-        }),
-      });
-      const data = (await res.json()) as { error?: string };
-      if (!res.ok) throw new Error(data.error || 'Gagal menyimpan pengaturan tema.');
-      setFeedback('Tampilan dan metadata SEO berhasil disimpan ke situs utama.');
-      onSaved();
+      await saveFirestorePublicSettings({ theme: draftTheme, seo: draftSeo });
+      setFeedback('Tampilan dan metadata SEO tersimpan di database cloud & langsung sinkron ke semua pengunjung.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Gagal menyimpan perubahan.');
     } finally {
@@ -65,33 +37,10 @@ export function ThemeEditorPanel({
     setError(null);
     setFeedback(null);
     try {
-      if (isStaticMode) {
-        const next = saveStaticSettings({ resetTheme: true });
-        setDraftTheme(next.theme);
-        setDraftSeo(next.seo);
-        setFeedback('Tema dikembalikan ke pengaturan standar.');
-        onSaved();
-        return;
-      }
-      const res = await fetch('/api/admin/settings', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify({ resetTheme: true }),
-      });
-      const data = (await res.json()) as {
-        overview?: { settings: { theme: ThemeConfig; seo: SeoConfig } };
-        error?: string;
-      };
-      if (!res.ok) throw new Error(data.error || 'Gagal mereset tema.');
-      if (data.overview?.settings) {
-        setDraftTheme(data.overview.settings.theme);
-        setDraftSeo(data.overview.settings.seo);
-      }
-      setFeedback('Tema dikembalikan ke pengaturan standar.');
-      onSaved();
+      const next = await saveFirestorePublicSettings({ resetTheme: true });
+      setDraftTheme(next.theme);
+      setDraftSeo(next.seo);
+      setFeedback('Tema dikembalikan ke pengaturan standar secara real-time.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Gagal mereset tema.');
     } finally {
