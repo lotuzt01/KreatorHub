@@ -17,23 +17,27 @@ import type {
   TelegramPreferences,
 } from '../types/store';
 import { formatDateTimeID } from '../lib/format';
-import { saveStaticSettings } from '../lib/staticFallback';
+import { appendStaticTelegramLog, saveStaticSettings } from '../lib/staticFallback';
 
 interface TelegramSettingsPanelProps {
+  storeName?: string;
   preferences: TelegramPreferences;
   status: TelegramConnectionStatus;
   logs: TelegramLog[];
   adminToken: string;
   isStaticMode?: boolean;
+  serverlessAvailable?: boolean;
   onUpdated: () => void;
 }
 
 export function TelegramSettingsPanel({
+  storeName = 'Karsa Digital',
   preferences,
   status,
   logs,
   adminToken,
   isStaticMode = false,
+  serverlessAvailable = false,
   onUpdated,
 }: TelegramSettingsPanelProps) {
   const [draft, setDraft] = useState<TelegramPreferences>(preferences);
@@ -77,16 +81,52 @@ export function TelegramSettingsPanel({
   };
 
   const handleTestSend = async () => {
-    if (isStaticMode) {
+    if (isStaticMode && !serverlessAvailable) {
       setMessage({
         type: 'err',
-        text: 'Mode statis GitHub Pages tidak menjalankan backend. Deploy ke server Node.js (Cloud Run/Railway/VPS) untuk menguji Bot Telegram.',
+        text: 'GitHub Pages adalah hosting statis tanpa server sehingga tidak bisa memanggil Bot Telegram langsung. Import repositori GitHub Anda ke Vercel (gratis) dan atur TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID di Environment Variables agar tombol ini langsung aktif.',
       });
       return;
     }
+
     setTesting(true);
     setMessage(null);
     try {
+      if (isStaticMode && serverlessAvailable) {
+        const res = await fetch('/api/telegram', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event: 'test',
+            storeName,
+            chatIdOverride: draft.customChatIdOverride || undefined,
+            messageHeader: draft.messageHeader,
+          }),
+        });
+        const data = (await res.json()) as {
+          status?: 'sent' | 'not_configured' | 'failed';
+          detail?: string;
+          preview?: string;
+          error?: string;
+        };
+        if (!res.ok) throw new Error(data.error || data.detail || 'Gagal menjalankan uji koneksi.');
+        const statusVal = data.status || 'failed';
+        appendStaticTelegramLog({
+          id: `tg-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          event: 'test',
+          status: statusVal,
+          detail: data.detail || 'Selesai',
+          preview: data.preview || `Uji Koneksi Bot Telegram — ${storeName}`,
+        });
+        setMessage({
+          type: statusVal === 'sent' ? 'ok' : 'err',
+          text: data.detail || 'Pengujian selesai.',
+        });
+        onUpdated();
+        return;
+      }
+
       const res = await fetch('/api/admin/telegram/test', {
         method: 'POST',
         headers: { Authorization: `Bearer ${adminToken}` },
@@ -146,6 +186,25 @@ export function TelegramSettingsPanel({
           </button>
         </div>
       </div>
+
+      {isStaticMode && !serverlessAvailable && (
+        <div className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50/80 p-4 text-xs leading-relaxed text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <div>
+            <p className="font-semibold">
+              Bot Telegram memerlukan server backend (GitHub Pages hanya menjalankan file statis).
+            </p>
+            <p className="mt-1">
+              Untuk mengaktifkan notifikasi Telegram real-time <strong>100% gratis</strong>, impor
+              repositori GitHub Anda ke <strong>vercel.com</strong> lalu masukkan{' '}
+              <span className="font-mono">TELEGRAM_BOT_TOKEN</span> dan{' '}
+              <span className="font-mono">TELEGRAM_CHAT_ID</span> di menu{' '}
+              <strong>Settings → Environment Variables</strong>. Endpoint{' '}
+              <span className="font-mono">/api/telegram</span> sudah disiapkan otomatis di proyek ini.
+            </p>
+          </div>
+        </div>
+      )}
 
       {message && (
         <div

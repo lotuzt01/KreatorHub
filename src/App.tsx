@@ -7,7 +7,7 @@ import { StorefrontView } from './components/StorefrontView';
 import { ProductDetailModal } from './components/ProductDetailModal';
 import { CartCheckoutDrawer } from './components/CartCheckoutDrawer';
 import { AdminAuthGate } from './components/AdminAuthGate';
-import { AdminDashboard } from './components/AdminDashboard';
+import { AdminDashboard, type ServerlessHealthInfo } from './components/AdminDashboard';
 
 type AppRoute = 'storefront' | 'admin';
 
@@ -51,6 +51,7 @@ export default function App() {
   // Admin session token strictly held in React memory (never localStorage)
   const [adminToken, setAdminToken] = useState<string | null>(null);
   const [isStaticMode, setIsStaticMode] = useState<boolean>(false);
+  const [serverlessHealth, setServerlessHealth] = useState<ServerlessHealthInfo | null>(null);
 
   const loadStorefront = useCallback(async () => {
     try {
@@ -63,6 +64,7 @@ export default function App() {
       }
       const data = (await res.json()) as StorefrontPayload;
       setIsStaticMode(false);
+      setServerlessHealth(null);
       setStorefront(data);
 
       // Respect store default theme if visitor hasn't explicitly toggled light/dark
@@ -78,10 +80,26 @@ export default function App() {
         if (matched) setSelectedProduct(matched);
       }
     } catch {
-      // Automatic fallback for purely static hosting (GitHub Pages / static Netlify / Vercel)
+      // Automatic fallback for Vercel Serverless or GitHub Pages static hosting
       const fallback = getStaticStorefrontPayload();
       setIsStaticMode(true);
       setStorefront(fallback);
+
+      // Probe Vercel Serverless /api/health to detect live /api/telegram & /api/payment functions
+      try {
+        const healthRes = await fetch('/api/health', {
+          headers: { Accept: 'application/json' },
+        });
+        const healthType = healthRes.headers.get('content-type') || '';
+        if (healthRes.ok && healthType.includes('application/json')) {
+          const healthData = (await healthRes.json()) as ServerlessHealthInfo;
+          if (healthData?.ok) {
+            setServerlessHealth(healthData);
+          }
+        }
+      } catch {
+        setServerlessHealth(null);
+      }
 
       if (!userToggledTheme) {
         setIsDark(fallback.settings.theme.defaultMode === 'dark');
@@ -257,6 +275,7 @@ export default function App() {
       <AdminDashboard
         adminToken={adminToken}
         isStaticMode={isStaticMode}
+        serverlessHealth={serverlessHealth}
         isDark={isDark}
         onToggleTheme={handleToggleTheme}
         onExitAdmin={() => setRoute('storefront')}
@@ -318,6 +337,9 @@ export default function App() {
           <CartCheckoutDrawer
             open={cartOpen}
             isStaticMode={isStaticMode}
+            serverlessAvailable={Boolean(serverlessHealth?.ok)}
+            storeName={storefront.settings.theme.storeName}
+            paymentSettings={storefront.settings.payment}
             items={cart}
             products={storefront.products}
             onClose={() => setCartOpen(false)}

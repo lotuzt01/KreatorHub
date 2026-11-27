@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   CheckCircle2,
   Clock,
+  CreditCard,
   Edit3,
   Globe,
   LogOut,
@@ -33,14 +34,26 @@ import {
 } from '../lib/staticFallback';
 import { ProductEditorModal } from './ProductEditorModal';
 import { ThemeEditorPanel } from './ThemeEditorPanel';
+import { PaymentSettingsPanel } from './PaymentSettingsPanel';
 import { DeploySeoPanel, TelegramSettingsPanel } from './TelegramDeployPanels';
 import { SafeImage } from './SafeImage';
 
-type AdminTab = 'orders' | 'products' | 'theme' | 'telegram' | 'deploy';
+export interface ServerlessHealthInfo {
+  ok: boolean;
+  runtime: string;
+  telegramBotConfigured: boolean;
+  telegramChatConfigured: boolean;
+  midtransConfigured: boolean;
+  webhookSecretConfigured: boolean;
+  paymentMode: 'production' | 'sandbox';
+}
+
+type AdminTab = 'orders' | 'products' | 'payment' | 'theme' | 'telegram' | 'deploy';
 
 interface AdminDashboardProps {
   adminToken: string;
   isStaticMode?: boolean;
+  serverlessHealth?: ServerlessHealthInfo | null;
   isDark: boolean;
   onToggleTheme: () => void;
   onExitAdmin: () => void;
@@ -51,6 +64,7 @@ interface AdminDashboardProps {
 const TAB_ITEMS: Array<{ id: AdminTab; label: string; icon: typeof ShoppingCart }> = [
   { id: 'orders', label: 'Ringkasan & Pesanan', icon: ShoppingCart },
   { id: 'products', label: 'Produk & Stok', icon: Package },
+  { id: 'payment', label: 'Pembayaran', icon: CreditCard },
   { id: 'theme', label: 'Editor Tampilan', icon: Palette },
   { id: 'telegram', label: 'Bot Telegram', icon: Send },
   { id: 'deploy', label: 'Deploy & SEO', icon: Globe },
@@ -59,6 +73,7 @@ const TAB_ITEMS: Array<{ id: AdminTab; label: string; icon: typeof ShoppingCart 
 export function AdminDashboard({
   adminToken,
   isStaticMode = false,
+  serverlessHealth = null,
   isDark,
   onToggleTheme,
   onExitAdmin,
@@ -82,7 +97,7 @@ export function AdminDashboard({
 
   const fetchOverview = useCallback(async () => {
     if (isStaticMode) {
-      setOverview(getStaticAdminOverview());
+      setOverview(getStaticAdminOverview(serverlessHealth ?? undefined));
       setError(null);
       setLoading(false);
       return;
@@ -105,7 +120,7 @@ export function AdminDashboard({
     } finally {
       setLoading(false);
     }
-  }, [adminToken, isStaticMode, onLogout]);
+  }, [adminToken, isStaticMode, serverlessHealth, onLogout]);
 
   useEffect(() => {
     fetchOverview();
@@ -712,7 +727,19 @@ export function AdminDashboard({
                 </div>
               )}
 
-              {/* TAB 3: NO-CODE VISUAL THEME & SEO EDITOR */}
+              {/* TAB 3: PAYMENT SETTINGS */}
+              {activeTab === 'payment' && (
+                <PaymentSettingsPanel
+                  payment={overview.settings.payment}
+                  status={overview.paymentStatus}
+                  adminToken={adminToken}
+                  isStaticMode={isStaticMode}
+                  serverlessAvailable={Boolean(serverlessHealth?.ok)}
+                  onSaved={handleRefreshAll}
+                />
+              )}
+
+              {/* TAB 4: NO-CODE VISUAL THEME & SEO EDITOR */}
               {activeTab === 'theme' && (
                 <ThemeEditorPanel
                   theme={overview.settings.theme}
@@ -723,14 +750,16 @@ export function AdminDashboard({
                 />
               )}
 
-              {/* TAB 4: TELEGRAM BOT SETTINGS */}
+              {/* TAB 5: TELEGRAM BOT SETTINGS */}
               {activeTab === 'telegram' && (
                 <TelegramSettingsPanel
+                  storeName={overview.settings.theme.storeName}
                   preferences={overview.settings.telegram}
                   status={overview.telegramStatus}
                   logs={overview.telegramLogs}
                   adminToken={adminToken}
                   isStaticMode={isStaticMode}
+                  serverlessAvailable={Boolean(serverlessHealth?.ok)}
                   onUpdated={fetchOverview}
                 />
               )}

@@ -1,8 +1,35 @@
 export type PaymentMethod = 'qris' | 'va_bca' | 'va_mandiri' | 'ewallet_gopay' | 'ewallet_dana';
 
+export type PaymentGatewayProvider = 'builtin_auto' | 'midtrans' | 'tripay' | 'xendit';
+
 export type OrderStatus = 'PENDING' | 'PAID' | 'CANCELLED';
 
 export type CornerStyle = 'sharp' | 'modern' | 'soft';
+
+export interface PaymentMethodConfig {
+  id: PaymentMethod;
+  label: string;
+  description: string;
+  enabled: boolean;
+  accountNumber: string;
+  accountHolder: string;
+}
+
+export interface PaymentSettings {
+  provider: PaymentGatewayProvider;
+  merchantName: string;
+  qrisMerchantId: string;
+  qrisImageUrl: string;
+  expiryMinutes: number;
+  autoConfirmDemo: boolean;
+  methods: PaymentMethodConfig[];
+}
+
+export interface PaymentGatewayStatus {
+  midtransConfigured: boolean;
+  webhookSecretConfigured: boolean;
+  mode: 'production' | 'sandbox';
+}
 
 export interface Product {
   id: string;
@@ -100,6 +127,7 @@ export interface StoreSettings {
   theme: ThemeConfig;
   seo: SeoConfig;
   telegram: TelegramPreferences;
+  payment: PaymentSettings;
   categories: string[];
 }
 
@@ -108,6 +136,7 @@ export interface StorefrontPayload {
   settings: {
     theme: ThemeConfig;
     seo: SeoConfig;
+    payment: PaymentSettings;
     categories: string[];
   };
   stats: {
@@ -133,6 +162,7 @@ export interface AdminOverviewPayload {
   orders: Order[];
   settings: StoreSettings;
   telegramStatus: TelegramConnectionStatus;
+  paymentStatus: PaymentGatewayStatus;
   telegramLogs: TelegramLog[];
   metrics: {
     totalRevenue: number;

@@ -3,6 +3,7 @@ import type {
   Order,
   OrderItem,
   PaymentMethod,
+  PaymentSettings,
   Product,
   StoreSettings,
   StorefrontPayload,
@@ -17,6 +18,59 @@ interface StaticStoreDatabase {
 }
 
 const STORAGE_KEY = 'karsa_digital_static_store_v1';
+
+export function getDefaultStaticPaymentSettings(): PaymentSettings {
+  return {
+    provider: 'builtin_auto',
+    merchantName: 'Karsa Digital Studio',
+    qrisMerchantId: 'ID1026384920192',
+    qrisImageUrl: '',
+    expiryMinutes: 30,
+    autoConfirmDemo: true,
+    methods: [
+      {
+        id: 'qris',
+        label: 'QRIS Otomatis',
+        description: 'Verifikasi instan semua e-wallet & m-banking Indonesia',
+        enabled: true,
+        accountNumber: 'ID1026384920192',
+        accountHolder: 'Karsa Digital Studio',
+      },
+      {
+        id: 'va_bca',
+        label: 'Virtual Account BCA',
+        description: 'Konfirmasi otomatis tanpa unggah bukti transfer',
+        enabled: true,
+        accountNumber: '8801081290441120',
+        accountHolder: 'PT Karsa Digital Nusantara',
+      },
+      {
+        id: 'va_mandiri',
+        label: 'Virtual Account Mandiri',
+        description: 'Nomor VA unik untuk pesanan ini',
+        enabled: true,
+        accountNumber: '8950808129044112',
+        accountHolder: 'PT Karsa Digital Nusantara',
+      },
+      {
+        id: 'ewallet_gopay',
+        label: 'GoPay Instan',
+        description: 'Pembayaran langsung dari aplikasi Gojek',
+        enabled: true,
+        accountNumber: '081290441120',
+        accountHolder: 'Karsa Digital',
+      },
+      {
+        id: 'ewallet_dana',
+        label: 'DANA Instan',
+        description: 'Bebas biaya administrasi tambahan',
+        enabled: true,
+        accountNumber: '081290441120',
+        accountHolder: 'Karsa Digital',
+      },
+    ],
+  };
+}
 
 export function getDefaultStaticSettings(): StoreSettings {
   return {
@@ -52,6 +106,7 @@ export function getDefaultStaticSettings(): StoreSettings {
       customChatIdOverride: '',
       messageHeader: 'Notifikasi Pesanan Karsa Digital',
     },
+    payment: getDefaultStaticPaymentSettings(),
     categories: ['UI Kit & Template', 'E-Book & Panduan', 'Source Code', 'Aset Desain'],
   };
 }
@@ -227,6 +282,15 @@ export function loadStaticDb(): StaticStoreDatabase {
         theme: { ...defaults.settings.theme, ...(parsed.settings?.theme ?? {}) },
         seo: { ...defaults.settings.seo, ...(parsed.settings?.seo ?? {}) },
         telegram: { ...defaults.settings.telegram, ...(parsed.settings?.telegram ?? {}) },
+        payment: {
+          ...defaults.settings.payment,
+          ...(parsed.settings?.payment ?? {}),
+          methods:
+            Array.isArray(parsed.settings?.payment?.methods) &&
+            parsed.settings.payment.methods.length > 0
+              ? parsed.settings.payment.methods
+              : defaults.settings.payment.methods,
+        },
         categories:
           Array.isArray(parsed.settings?.categories) && parsed.settings.categories.length > 0
             ? parsed.settings.categories
@@ -255,6 +319,7 @@ export function getStaticStorefrontPayload(): StorefrontPayload {
     settings: {
       theme: db.settings.theme,
       seo: db.settings.seo,
+      payment: db.settings.payment,
       categories: db.settings.categories,
     },
     stats: {
@@ -265,7 +330,13 @@ export function getStaticStorefrontPayload(): StorefrontPayload {
   };
 }
 
-export function getStaticAdminOverview(): AdminOverviewPayload {
+export function getStaticAdminOverview(serverlessHealth?: {
+  telegramBotConfigured?: boolean;
+  telegramChatConfigured?: boolean;
+  midtransConfigured?: boolean;
+  webhookSecretConfigured?: boolean;
+  paymentMode?: 'production' | 'sandbox';
+}): AdminOverviewPayload {
   const db = loadStaticDb();
   const threshold = db.settings.telegram.lowStockThreshold ?? 5;
   const paidOrders = db.orders.filter((o) => o.status === 'PAID');
@@ -280,9 +351,14 @@ export function getStaticAdminOverview(): AdminOverviewPayload {
     orders: db.orders,
     settings: db.settings,
     telegramStatus: {
-      botTokenConfigured: false,
-      envChatIdConfigured: false,
-      effectiveChatIdMasked: null,
+      botTokenConfigured: Boolean(serverlessHealth?.telegramBotConfigured),
+      envChatIdConfigured: Boolean(serverlessHealth?.telegramChatConfigured),
+      effectiveChatIdMasked: serverlessHealth?.telegramChatConfigured ? 'Terpasang di Vercel' : null,
+    },
+    paymentStatus: {
+      midtransConfigured: Boolean(serverlessHealth?.midtransConfigured),
+      webhookSecretConfigured: Boolean(serverlessHealth?.webhookSecretConfigured),
+      mode: serverlessHealth?.paymentMode || 'sandbox',
     },
     telegramLogs: db.telegramLogs,
     metrics: {
@@ -293,6 +369,15 @@ export function getStaticAdminOverview(): AdminOverviewPayload {
       lowStockProductsCount: lowStockProducts.length,
     },
   };
+}
+
+export function appendStaticTelegramLog(log: TelegramLog): void {
+  const db = loadStaticDb();
+  db.telegramLogs.unshift(log);
+  if (db.telegramLogs.length > 50) {
+    db.telegramLogs = db.telegramLogs.slice(0, 50);
+  }
+  saveStaticDb(db);
 }
 
 export function createStaticOrder(params: {
@@ -463,6 +548,7 @@ export function saveStaticSettings(payload: {
   theme?: Partial<StoreSettings['theme']>;
   seo?: Partial<StoreSettings['seo']>;
   telegram?: Partial<StoreSettings['telegram']>;
+  payment?: Partial<StoreSettings['payment']>;
   resetTheme?: boolean;
 }): StoreSettings {
   const db = loadStaticDb();
@@ -476,6 +562,9 @@ export function saveStaticSettings(payload: {
   }
   if (payload.telegram) {
     db.settings.telegram = { ...db.settings.telegram, ...payload.telegram };
+  }
+  if (payload.payment) {
+    db.settings.payment = { ...db.settings.payment, ...payload.payment };
   }
   saveStaticDb(db);
   return db.settings;

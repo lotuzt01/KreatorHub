@@ -1,9 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   AlertCircle,
+  Check,
   CheckCircle2,
+  Copy,
   CreditCard,
   Download,
+  ExternalLink,
   Minus,
   Plus,
   QrCode,
@@ -12,11 +15,19 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { CartItem, Order, PaymentMethod, Product } from '../types/store';
-import { formatIDR, formatPaymentMethodLabel } from '../lib/format';
+import type {
+  CartItem,
+  Order,
+  PaymentMethod,
+  PaymentSettings,
+  Product,
+} from '../types/store';
+import { formatIDR, formatPaymentMethodLabel, isSafeHttpOrLocalUrl } from '../lib/format';
 import {
+  appendStaticTelegramLog,
   confirmStaticOrderPayment,
   createStaticOrder,
+  loadStaticDb,
   triggerStaticLicenseDownload,
 } from '../lib/staticFallback';
 import { SafeImage } from './SafeImage';
@@ -24,6 +35,9 @@ import { SafeImage } from './SafeImage';
 interface CartCheckoutDrawerProps {
   open: boolean;
   isStaticMode?: boolean;
+  serverlessAvailable?: boolean;
+  storeName?: string;
+  paymentSettings: PaymentSettings;
   items: CartItem[];
   products: Product[];
   onClose: () => void;
@@ -35,17 +49,12 @@ interface CartCheckoutDrawerProps {
 
 type CheckoutStep = 'cart' | 'checkout' | 'payment' | 'success';
 
-const PAYMENT_OPTIONS: Array<{ id: PaymentMethod; title: string; subtitle: string }> = [
-  { id: 'qris', title: 'QRIS Otomatis', subtitle: 'Verifikasi instan semua e-wallet & m-banking' },
-  { id: 'va_bca', title: 'Virtual Account BCA', subtitle: 'Konfirmasi otomatis tanpa unggah bukti' },
-  { id: 'va_mandiri', title: 'Virtual Account Mandiri', subtitle: 'Nomor VA unik untuk pesanan ini' },
-  { id: 'ewallet_gopay', title: 'GoPay Instan', subtitle: 'Pembayaran langsung dari aplikasi Gojek' },
-  { id: 'ewallet_dana', title: 'DANA Instan', subtitle: 'Bebas biaya administrasi tambahan' },
-];
-
 export function CartCheckoutDrawer({
   open,
   isStaticMode = false,
+  serverlessAvailable = false,
+  storeName = 'Karsa Digital',
+  paymentSettings,
   items,
   products,
   onClose,
@@ -54,14 +63,25 @@ export function CartCheckoutDrawer({
   onClearCart,
   onOrderCompleted,
 }: CartCheckoutDrawerProps) {
+  const enabledMethods = paymentSettings.methods.filter((m) => m.enabled);
   const [step, setStep] = useState<CheckoutStep>('cart');
   const [customerName, setCustomerName] = useState('');
   const [customerEmail, setCustomerEmail] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('qris');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
+    enabledMethods[0]?.id ?? 'qris',
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeOrder, setActiveOrder] = useState<Order | null>(null);
+  const [gatewayPaymentUrl, setGatewayPaymentUrl] = useState<string | null>(null);
+  const [copiedAccount, setCopiedAccount] = useState(false);
+
+  useEffect(() => {
+    if (enabledMethods.length > 0 && !enabledMethods.some((m) => m.id === paymentMethod)) {
+      setPaymentMethod(enabledMethods[0].id);
+    }
+  }, [enabledMethods, paymentMethod]);
 
   if (!open) return null;
 
@@ -79,13 +99,64 @@ export function CartCheckoutDrawer({
     if (step === 'success') {
       setStep('cart');
       setActiveOrder(null);
+      setGatewayPaymentUrl(null);
     }
     onClose();
+  };
+
+  const notifyServerlessTelegram = async (
+    order: Order,
+    event: 'order_created' | 'order_paid',
+  ): Promise<string | null> => {
+    if (!serverlessAvailable) return null;
+    try {
+      const staticPrefs = loadStaticDb().settings.telegram;
+      if (event === 'order_created' && !staticPrefs.notifyOnOrderCreated) return null;
+      if (event === 'order_paid' && !staticPrefs.notifyOnOrderPaid) return null;
+
+      const tgRes = await fetch('/api/telegram', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event,
+          storeName,
+          invoiceCode: order.invoiceCode,
+          customerName: order.customerName,
+          customerEmail: order.customerEmail,
+          customerPhone: order.customerPhone,
+          paymentMethod: order.paymentMethod,
+          paymentReference: order.paymentReference,
+          totalAmount: order.totalAmount,
+          items: order.items,
+          chatIdOverride: staticPrefs.customChatIdOverride || undefined,
+          messageHeader: staticPrefs.messageHeader,
+        }),
+      });
+      const tgData = (await tgRes.json().catch(() => null)) as
+        | { status?: 'sent' | 'not_configured' | 'failed'; detail?: string; preview?: string }
+        | null;
+      if (tgData?.status) {
+        appendStaticTelegramLog({
+          id: `tg-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          event,
+          orderId: order.id,
+          status: tgData.status,
+          detail: tgData.detail || '',
+          preview: tgData.preview || `Invoice ${order.invoiceCode}`,
+        });
+        return tgData.detail || null;
+      }
+    } catch {
+      return null;
+    }
+    return null;
   };
 
   const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setGatewayPaymentUrl(null);
 
     if (customerName.trim().length < 2) {
       setError('Masukkan nama lengkap Anda (minimal 2 karakter).');
@@ -110,6 +181,36 @@ export function CartCheckoutDrawer({
           paymentMethod,
           items: resolvedCart.map((c) => ({ productId: c.productId, quantity: c.quantity })),
         });
+
+        if (serverlessAvailable) {
+          // Create automated payment session via Vercel /api/payment if Midtrans key is set
+          try {
+            const payRes = await fetch('/api/payment', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                invoiceCode: order.invoiceCode,
+                totalAmount: order.totalAmount,
+                customerName: order.customerName,
+                customerEmail: order.customerEmail,
+                customerPhone: order.customerPhone,
+                paymentMethod: order.paymentMethod,
+              }),
+            });
+            const payData = (await payRes.json().catch(() => null)) as
+              | { paymentUrl?: string | null; paymentReference?: string }
+              | null;
+            if (payRes.ok && payData?.paymentUrl && isSafeHttpOrLocalUrl(payData.paymentUrl)) {
+              setGatewayPaymentUrl(payData.paymentUrl);
+            }
+          } catch {
+            // Continue with built-in QRIS/VA details
+          }
+
+          const tgNote = await notifyServerlessTelegram(order, 'order_created');
+          if (tgNote) order.telegramMessage = tgNote;
+        }
+
         setActiveOrder(order);
         onClearCart();
         onOrderCompleted();
@@ -150,7 +251,14 @@ export function CartCheckoutDrawer({
     try {
       if (isStaticMode) {
         const paidOrder = confirmStaticOrderPayment(activeOrder.id);
-        setActiveOrder(paidOrder);
+        if (serverlessAvailable) {
+          const tgNote = await notifyServerlessTelegram(paidOrder, 'order_paid');
+          if (tgNote) {
+            paidOrder.telegramMessage = tgNote;
+            paidOrder.telegramStatus = tgNote.includes('terkirim') ? 'sent' : 'not_configured';
+          }
+        }
+        setActiveOrder({ ...paidOrder });
         onOrderCompleted();
         setStep('success');
         return;
@@ -358,10 +466,10 @@ export function CartCheckoutDrawer({
 
               <div className="border-t border-slate-200 pt-4 dark:border-zinc-800">
                 <p className="text-xs font-semibold text-slate-700 dark:text-zinc-300">
-                  Pilih Metode Pembayaran Otomatis
+                  Pilih Metode Pembayaran ({paymentSettings.merchantName})
                 </p>
                 <div className="mt-2.5 space-y-2">
-                  {PAYMENT_OPTIONS.map((opt) => {
+                  {enabledMethods.map((opt) => {
                     const selected = paymentMethod === opt.id;
                     return (
                       <button
@@ -376,9 +484,11 @@ export function CartCheckoutDrawer({
                       >
                         <div>
                           <p className="text-sm font-semibold text-slate-900 dark:text-zinc-100">
-                            {opt.title}
+                            {opt.label}
                           </p>
-                          <p className="text-xs text-slate-500 dark:text-zinc-400">{opt.subtitle}</p>
+                          <p className="text-xs text-slate-500 dark:text-zinc-400">
+                            {opt.description}
+                          </p>
                         </div>
                         <CreditCard
                           className={`h-4 w-4 shrink-0 ${
@@ -395,48 +505,113 @@ export function CartCheckoutDrawer({
           )}
 
           {/* STEP 3: AUTOMATED PAYMENT VERIFICATION */}
-          {step === 'payment' && activeOrder && (
-            <div className="space-y-5">
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-5 text-center dark:border-zinc-800 dark:bg-zinc-900">
-                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100">
-                  <QrCode className="h-8 w-8" aria-hidden="true" />
+          {step === 'payment' && activeOrder && (() => {
+            const methodCfg = paymentSettings.methods.find((m) => m.id === activeOrder.paymentMethod);
+            const accountNumber =
+              activeOrder.paymentMethod === 'qris'
+                ? paymentSettings.qrisMerchantId || methodCfg?.accountNumber || activeOrder.paymentReference
+                : methodCfg?.accountNumber || activeOrder.paymentReference;
+            const accountHolder = methodCfg?.accountHolder || paymentSettings.merchantName;
+
+            return (
+              <div className="space-y-5">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-5 text-center dark:border-zinc-800 dark:bg-zinc-900">
+                  {activeOrder.paymentMethod === 'qris' &&
+                  paymentSettings.qrisImageUrl &&
+                  isSafeHttpOrLocalUrl(paymentSettings.qrisImageUrl) ? (
+                    <div className="mx-auto mb-3 h-44 w-44 overflow-hidden rounded-lg border border-slate-200 bg-white p-2 dark:border-zinc-700">
+                      <SafeImage
+                        src={paymentSettings.qrisImageUrl}
+                        alt={`QRIS ${paymentSettings.merchantName}`}
+                        className="h-full w-full object-contain"
+                      />
+                    </div>
+                  ) : (
+                    <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100">
+                      <QrCode className="h-8 w-8" aria-hidden="true" />
+                    </div>
+                  )}
+
+                  <p className="mt-3 text-xs font-medium text-slate-500 dark:text-zinc-400">
+                    {methodCfg?.label || formatPaymentMethodLabel(activeOrder.paymentMethod)} · {accountHolder}
+                  </p>
+                  <p className="mt-1 font-mono text-2xl font-bold tabular-nums text-slate-900 dark:text-zinc-50">
+                    {formatIDR(activeOrder.totalAmount)}
+                  </p>
+
+                  <div className="mt-3 flex items-center justify-center gap-2">
+                    <span className="rounded border border-slate-200 bg-white px-2.5 py-1 font-mono text-xs font-semibold text-slate-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100">
+                      {accountNumber}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(accountNumber);
+                        setCopiedAccount(true);
+                        setTimeout(() => setCopiedAccount(false), 1800);
+                      }}
+                      className="inline-flex h-7 cursor-pointer items-center gap-1 rounded border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    >
+                      {copiedAccount ? (
+                        <>
+                          <Check className="h-3 w-3 text-emerald-600" />
+                          <span>Disalin</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-3 w-3" />
+                          <span>Salin</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {gatewayPaymentUrl && (
+                    <a
+                      href={gatewayPaymentUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ backgroundColor: 'var(--store-accent)' }}
+                      className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-lg px-4 text-xs font-semibold text-white hover:opacity-90"
+                    >
+                      <span>Buka Halaman Pembayaran Gateway</span>
+                      <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                    </a>
+                  )}
                 </div>
-                <p className="mt-3 text-xs font-medium text-slate-500 dark:text-zinc-400">
-                  {formatPaymentMethodLabel(activeOrder.paymentMethod)}
-                </p>
-                <p className="mt-1 font-mono text-2xl font-bold tabular-nums text-slate-900 dark:text-zinc-50">
-                  {formatIDR(activeOrder.totalAmount)}
-                </p>
-                <p className="mt-2 font-mono text-xs text-slate-600 dark:text-zinc-400">
-                  Kode Referensi: {activeOrder.paymentReference}
+
+                <div className="space-y-2 border-t border-slate-200 pt-4 text-sm dark:border-zinc-800">
+                  <div className="flex justify-between">
+                    <span className="text-slate-500 dark:text-zinc-400">Nomor Invoice</span>
+                    <span className="font-mono font-medium text-slate-900 dark:text-zinc-100">
+                      {activeOrder.invoiceCode}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500 dark:text-zinc-400">Batas Waktu</span>
+                    <span className="font-mono text-slate-900 dark:text-zinc-100">
+                      {paymentSettings.expiryMinutes} menit
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500 dark:text-zinc-400">Pembeli</span>
+                    <span className="font-medium text-slate-900 dark:text-zinc-100">
+                      {activeOrder.customerName}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500 dark:text-zinc-400">Email</span>
+                    <span className="text-slate-900 dark:text-zinc-100">{activeOrder.customerEmail}</span>
+                  </div>
+                </div>
+
+                <p className="text-xs leading-relaxed text-slate-500 dark:text-zinc-400">
+                  Selesaikan pembayaran melalui kanal yang dipilih, lalu tekan tombol konfirmasi di bawah untuk
+                  membuka tautan unduhan instan serta mengirim notifikasi pesanan ke Bot Telegram admin.
                 </p>
               </div>
-
-              <div className="space-y-2 border-t border-slate-200 pt-4 text-sm dark:border-zinc-800">
-                <div className="flex justify-between">
-                  <span className="text-slate-500 dark:text-zinc-400">Nomor Invoice</span>
-                  <span className="font-mono font-medium text-slate-900 dark:text-zinc-100">
-                    {activeOrder.invoiceCode}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500 dark:text-zinc-400">Pembeli</span>
-                  <span className="font-medium text-slate-900 dark:text-zinc-100">
-                    {activeOrder.customerName}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500 dark:text-zinc-400">Email</span>
-                  <span className="text-slate-900 dark:text-zinc-100">{activeOrder.customerEmail}</span>
-                </div>
-              </div>
-
-              <p className="text-xs leading-relaxed text-slate-500 dark:text-zinc-400">
-                Selesaikan pembayaran melalui kanal yang dipilih, lalu tekan tombol konfirmasi di bawah untuk
-                membuka tautan unduhan instan serta mengirim notifikasi pesanan ke Bot Telegram admin.
-              </p>
-            </div>
-          )}
+            );
+          })()}
 
           {/* STEP 4: SUCCESS + INSTANT FILE DOWNLOADS */}
           {step === 'success' && activeOrder && (

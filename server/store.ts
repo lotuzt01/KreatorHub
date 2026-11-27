@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import type {
   Order,
+  PaymentSettings,
   Product,
   StoreSettings,
   TelegramLog,
@@ -44,6 +45,59 @@ function createSeedFile(fileKey: string, content: string): string {
   return `${Math.max(1, Math.round(stat.size / 1024))} KB`;
 }
 
+export function getDefaultPaymentSettings(): PaymentSettings {
+  return {
+    provider: 'builtin_auto',
+    merchantName: 'Karsa Digital Studio',
+    qrisMerchantId: 'ID1026384920192',
+    qrisImageUrl: '',
+    expiryMinutes: 30,
+    autoConfirmDemo: true,
+    methods: [
+      {
+        id: 'qris',
+        label: 'QRIS Otomatis',
+        description: 'Verifikasi instan semua e-wallet & m-banking Indonesia',
+        enabled: true,
+        accountNumber: 'ID1026384920192',
+        accountHolder: 'Karsa Digital Studio',
+      },
+      {
+        id: 'va_bca',
+        label: 'Virtual Account BCA',
+        description: 'Konfirmasi otomatis tanpa unggah bukti transfer',
+        enabled: true,
+        accountNumber: '8801081290441120',
+        accountHolder: 'PT Karsa Digital Nusantara',
+      },
+      {
+        id: 'va_mandiri',
+        label: 'Virtual Account Mandiri',
+        description: 'Nomor VA unik untuk pesanan ini',
+        enabled: true,
+        accountNumber: '8950808129044112',
+        accountHolder: 'PT Karsa Digital Nusantara',
+      },
+      {
+        id: 'ewallet_gopay',
+        label: 'GoPay Instan',
+        description: 'Pembayaran langsung dari aplikasi Gojek',
+        enabled: true,
+        accountNumber: '081290441120',
+        accountHolder: 'Karsa Digital',
+      },
+      {
+        id: 'ewallet_dana',
+        label: 'DANA Instan',
+        description: 'Bebas biaya administrasi tambahan',
+        enabled: true,
+        accountNumber: '081290441120',
+        accountHolder: 'Karsa Digital',
+      },
+    ],
+  };
+}
+
 export function getDefaultSettings(): StoreSettings {
   return {
     theme: {
@@ -78,6 +132,7 @@ export function getDefaultSettings(): StoreSettings {
       customChatIdOverride: '',
       messageHeader: 'Notifikasi Pesanan Karsa Digital',
     },
+    payment: getDefaultPaymentSettings(),
     categories: [
       'UI Kit & Template',
       'E-Book & Panduan',
@@ -374,6 +429,15 @@ export function loadDatabase(): StoreDatabase {
         theme: { ...defaults.theme, ...(parsed.settings?.theme ?? {}) },
         seo: { ...defaults.seo, ...(parsed.settings?.seo ?? {}) },
         telegram: { ...defaults.telegram, ...(parsed.settings?.telegram ?? {}) },
+        payment: {
+          ...defaults.payment,
+          ...(parsed.settings?.payment ?? {}),
+          methods:
+            Array.isArray(parsed.settings?.payment?.methods) &&
+            parsed.settings.payment.methods.length > 0
+              ? parsed.settings.payment.methods
+              : defaults.payment.methods,
+        },
         categories:
           Array.isArray(parsed.settings?.categories) && parsed.settings.categories.length > 0
             ? parsed.settings.categories

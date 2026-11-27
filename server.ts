@@ -128,6 +128,11 @@ function buildAdminOverview(): AdminOverviewPayload {
     orders: db.orders,
     settings: db.settings,
     telegramStatus: getTelegramConnectionStatus(db.settings),
+    paymentStatus: {
+      midtransConfigured: Boolean((process.env.MIDTRANS_SERVER_KEY || '').trim()),
+      webhookSecretConfigured: Boolean((process.env.PAYMENT_WEBHOOK_SECRET || '').trim()),
+      mode: process.env.MIDTRANS_IS_PRODUCTION === 'true' ? 'production' : 'sandbox',
+    },
     telegramLogs: db.telegramLogs,
     metrics: {
       totalRevenue: paidOrders.reduce((acc, o) => acc + o.totalAmount, 0),
@@ -229,6 +234,7 @@ async function startServer() {
       settings: {
         theme: db.settings.theme,
         seo: db.settings.seo,
+        payment: db.settings.payment,
         categories: db.settings.categories,
       },
       stats: {
@@ -812,13 +818,14 @@ async function startServer() {
     res.json({ result, overview: buildAdminOverview() });
   });
 
-  // ADMIN: Update store theme, SEO, categories, and Telegram preferences
+  // ADMIN: Update store theme, SEO, categories, payment, and Telegram preferences
   app.put('/api/admin/settings', requireAdmin, (req, res) => {
     const db = loadDatabase();
-    const { theme, seo, telegram, categories, resetTheme } = req.body as {
+    const { theme, seo, telegram, payment, categories, resetTheme } = req.body as {
       theme?: Partial<typeof db.settings.theme>;
       seo?: Partial<typeof db.settings.seo>;
       telegram?: Partial<typeof db.settings.telegram>;
+      payment?: Partial<typeof db.settings.payment>;
       categories?: string[];
       resetTheme?: boolean;
     };
@@ -857,6 +864,45 @@ async function startServer() {
           0,
           Math.min(100, Math.floor(Number(telegram.lowStockThreshold ?? db.settings.telegram.lowStockThreshold))),
         ),
+      };
+    }
+
+    if (payment) {
+      if (payment.qrisImageUrl && !isSafeUrlOrPath(payment.qrisImageUrl)) {
+        res.status(400).json({ error: 'URL gambar QRIS tidak valid.' });
+        return;
+      }
+      const nextMethods = Array.isArray(payment.methods)
+        ? payment.methods
+            .filter((m) => VALID_PAYMENT_METHODS.has(m.id))
+            .map((m) => ({
+              id: m.id,
+              label: String(m.label || '').trim().slice(0, 60),
+              description: String(m.description || '').trim().slice(0, 140),
+              enabled: Boolean(m.enabled),
+              accountNumber: String(m.accountNumber || '').trim().slice(0, 60),
+              accountHolder: String(m.accountHolder || '').trim().slice(0, 80),
+            }))
+        : db.settings.payment.methods;
+
+      db.settings.payment = {
+        ...db.settings.payment,
+        provider:
+          payment.provider === 'midtrans' ||
+          payment.provider === 'tripay' ||
+          payment.provider === 'xendit' ||
+          payment.provider === 'builtin_auto'
+            ? payment.provider
+            : db.settings.payment.provider,
+        merchantName: String(payment.merchantName ?? db.settings.payment.merchantName).trim().slice(0, 80),
+        qrisMerchantId: String(payment.qrisMerchantId ?? db.settings.payment.qrisMerchantId).trim().slice(0, 60),
+        qrisImageUrl: String(payment.qrisImageUrl ?? db.settings.payment.qrisImageUrl).trim(),
+        expiryMinutes: Math.max(
+          5,
+          Math.min(1440, Math.floor(Number(payment.expiryMinutes ?? db.settings.payment.expiryMinutes))),
+        ),
+        autoConfirmDemo: Boolean(payment.autoConfirmDemo ?? db.settings.payment.autoConfirmDemo),
+        methods: nextMethods.length > 0 ? nextMethods : db.settings.payment.methods,
       };
     }
 
