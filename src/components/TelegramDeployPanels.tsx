@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import {
   AlertCircle,
+  BookOpen,
   Check,
   CheckCircle2,
   Copy,
@@ -43,7 +44,15 @@ export function TelegramSettingsPanel({
   const [draft, setDraft] = useState<TelegramPreferences>(preferences);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [sendingHelp, setSendingHelp] = useState(false);
+  const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
+  const copyCommand = (key: string, value: string) => {
+    navigator.clipboard?.writeText(value);
+    setCopiedCmd(key);
+    setTimeout(() => setCopiedCmd((prev) => (prev === key ? null : prev)), 1800);
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -152,6 +161,121 @@ export function TelegramSettingsPanel({
     }
   };
 
+  const handleSendHelp = async () => {
+    if (isStaticMode && !serverlessAvailable) {
+      setMessage({
+        type: 'err',
+        text: 'Hubungkan repositori ke Vercel dan atur TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID agar panduan /help dapat dikirim langsung ke chat Telegram Anda.',
+      });
+      return;
+    }
+
+    setSendingHelp(true);
+    setMessage(null);
+    try {
+      if (isStaticMode && serverlessAvailable) {
+        const res = await fetch('/api/telegram', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event: 'help',
+            storeName,
+            chatIdOverride: draft.customChatIdOverride || undefined,
+          }),
+        });
+        const data = (await res.json()) as {
+          status?: 'sent' | 'not_configured' | 'failed';
+          detail?: string;
+          preview?: string;
+          error?: string;
+        };
+        if (!res.ok) throw new Error(data.error || data.detail || 'Gagal mengirim panduan /help.');
+        const statusVal = data.status || 'failed';
+        appendStaticTelegramLog({
+          id: `tg-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          event: 'help',
+          status: statusVal,
+          detail: data.detail || 'Panduan /help dikirim',
+          preview: data.preview || `Panduan Perintah /help — ${storeName}`,
+        });
+        setMessage({
+          type: statusVal === 'sent' ? 'ok' : 'err',
+          text:
+            statusVal === 'sent'
+              ? 'Panduan perintah /help berhasil dikirim ke Telegram Anda.'
+              : data.detail || 'Gagal mengirim panduan /help.',
+        });
+        onUpdated();
+        return;
+      }
+
+      const res = await fetch('/api/admin/telegram/help', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      const data = (await res.json()) as {
+        result?: { status: string; detail: string };
+        error?: string;
+      };
+      if (!res.ok) throw new Error(data.error || 'Gagal mengirim panduan /help.');
+      const ok = data.result?.status === 'sent';
+      setMessage({
+        type: ok ? 'ok' : 'err',
+        text: ok
+          ? 'Panduan perintah /help berhasil dikirim ke Telegram Anda.'
+          : data.result?.detail || 'Gagal mengirim panduan /help.',
+      });
+      onUpdated();
+    } catch (err) {
+      setMessage({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Gagal mengirim panduan /help.',
+      });
+    } finally {
+      setSendingHelp(false);
+    }
+  };
+
+  const TELEGRAM_HELP_COMMANDS = [
+    {
+      id: 'reply-bank',
+      title: 'Kirim Rekening & Nominal (Reply pesan pesanan)',
+      command: 'BCA | 1234567890 | 129123',
+      desc: 'Balas (Reply) pesan pesanan masuk dengan Nama Bank | Nomor Rekening | Nominal agar langsung tampil di layar pembeli.',
+    },
+    {
+      id: 'reply-bank-holder',
+      title: 'Kirim Rekening + Atas Nama (Reply pesan pesanan)',
+      command: 'BCA | 1234567890 | 129123 | Nama Pemilik',
+      desc: 'Opsional: tambahkan nama pemilik rekening di kolom keempat, atau pisahkan tiap bagian dengan Enter (baris baru).',
+    },
+    {
+      id: 'cmd-bayar',
+      title: 'Perintah Langsung Tanpa Reply (/bayar)',
+      command: '/bayar INV-2026-1002 | BCA | 1234567890 | 129123',
+      desc: 'Kirim instruksi bank ke pesanan tertentu tanpa perlu swipe-reply menggunakan nomor invoice.',
+    },
+    {
+      id: 'cmd-lunas',
+      title: 'Verifikasi Lunas & Buka Link Unduhan (/lunas)',
+      command: '/lunas INV-2026-1002',
+      desc: 'Atau cukup balas (Reply) pesan konfirmasi transfer pembeli dengan kata LUNAS, OK, atau ACC.',
+    },
+    {
+      id: 'cmd-batal',
+      title: 'Batalkan Pesanan (/batal)',
+      command: '/batal INV-2026-1002',
+      desc: 'Atau balas (Reply) pesan pesanan dengan kata BATAL untuk membatalkan transaksi.',
+    },
+    {
+      id: 'cmd-help',
+      title: 'Tampilkan Panduan Perintah di Chat Bot (/help)',
+      command: '/help',
+      desc: 'Ketik /help atau /panduan di chat bot (atau klik tombol Kirim /help di atas) untuk melihat daftar perintah.',
+    },
+  ];
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-4 dark:border-zinc-800">
@@ -160,11 +284,20 @@ export function TelegramSettingsPanel({
             Integrasi Bot Telegram Real-Time
           </h2>
           <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
-            Terima laporan pesanan masuk, pembayaran lunas, dan peringatan stok langsung di Telegram.
+            Terima pesanan masuk, kirim rekening &amp; nominal via balasan Telegram, dan pantau panduan perintah /help.
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={sendingHelp}
+            onClick={handleSendHelp}
+            className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 text-xs font-semibold text-slate-800 hover:bg-slate-50 whitespace-nowrap dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+          >
+            <BookOpen className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>{sendingHelp ? 'Mengirim /help...' : 'Kirim /help ke Telegram'}</span>
+          </button>
           <button
             type="button"
             disabled={testing}
@@ -347,8 +480,65 @@ export function TelegramSettingsPanel({
           </div>
         </div>
 
-        {/* Live Telegram Delivery Log */}
-        <div className="lg:col-span-6">
+        {/* Right Column: Telegram /help Command Guide + Delivery Log */}
+        <div className="space-y-5 lg:col-span-6">
+          <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="font-display text-sm font-bold text-slate-900 dark:text-zinc-100">
+                  Panduan Perintah Bot Telegram (/help)
+                </h3>
+                <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
+                  Daftar format komen &amp; balasan resmi yang bisa Anda kirim di chat Bot Telegram admin.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={sendingHelp}
+                onClick={handleSendHelp}
+                className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 whitespace-nowrap dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800"
+              >
+                <Send className="h-3 w-3" aria-hidden="true" />
+                <span>{sendingHelp ? 'Mengirim...' : 'Kirim ke Chat'}</span>
+              </button>
+            </div>
+
+            <div className="mt-4 divide-y divide-slate-200 border-t border-slate-200 dark:divide-zinc-800 dark:border-zinc-800">
+              {TELEGRAM_HELP_COMMANDS.map((cmd) => (
+                <div key={cmd.id} className="py-3 first:pt-3 last:pb-0">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-xs font-semibold text-slate-900 dark:text-zinc-100">
+                      {cmd.title}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => copyCommand(cmd.id, cmd.command)}
+                      className="inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded border border-slate-200 bg-white px-2 text-[11px] font-medium text-slate-600 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                    >
+                      {copiedCmd === cmd.id ? (
+                        <>
+                          <Check className="h-3 w-3 text-emerald-600" />
+                          <span>Disalin</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-3 w-3" />
+                          <span>Salin</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <p className="mt-1.5 rounded border border-slate-200 bg-slate-50 px-2.5 py-1.5 font-mono text-[11px] text-slate-800 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200">
+                    {cmd.command}
+                  </p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-slate-500 dark:text-zinc-400">
+                    {cmd.desc}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+
           <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
             <h3 className="font-display text-sm font-bold text-slate-900 dark:text-zinc-100">
               Riwayat Pengiriman Notifikasi
@@ -359,10 +549,10 @@ export function TelegramSettingsPanel({
 
             {logs.length === 0 ? (
               <p className="mt-6 py-8 text-center text-xs text-slate-500 dark:text-zinc-400">
-                Belum ada riwayat notifikasi. Coba tekan &ldquo;Kirim Pesan Uji&rdquo; atau buat pesanan baru.
+                Belum ada riwayat notifikasi. Coba tekan &ldquo;Kirim Pesan Uji&rdquo; atau &ldquo;Kirim /help ke Telegram&rdquo;.
               </p>
             ) : (
-              <div className="mt-4 max-h-[520px] space-y-3 overflow-y-auto pr-1">
+              <div className="mt-4 max-h-[420px] space-y-3 overflow-y-auto pr-1">
                 {logs.map((log) => (
                   <div
                     key={log.id}
@@ -370,9 +560,11 @@ export function TelegramSettingsPanel({
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="font-semibold text-slate-900 dark:text-zinc-100">
-                        {log.event === 'order_paid' && 'Pembayaran Lunas'}
+                        {log.event === 'order_paid' && 'Pembayaran Lunas + Link Produk'}
+                        {log.event === 'transfer_submitted' && 'Bukti Transfer Pembeli'}
                         {log.event === 'order_created' && 'Pesanan Baru'}
                         {log.event === 'low_stock' && 'Stok Menipis'}
+                        {log.event === 'help' && 'Panduan /help'}
                         {log.event === 'test' && 'Uji Koneksi'}
                       </span>
                       <span className="font-mono text-[11px] tabular-nums text-slate-500 dark:text-zinc-400">

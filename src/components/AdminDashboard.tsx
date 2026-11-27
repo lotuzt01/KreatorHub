@@ -15,6 +15,7 @@ import {
   RefreshCw,
   Search,
   Send,
+  ShieldCheck,
   ShoppingCart,
   Sun,
   Trash2,
@@ -30,9 +31,9 @@ import {
   deleteStaticProduct,
   getStaticAdminOverview,
   saveStaticProduct,
-  updateStaticOrderStatus,
 } from '../lib/staticFallback';
 import { ProductEditorModal } from './ProductEditorModal';
+import { OrderVerificationModal } from './OrderVerificationModal';
 import { ThemeEditorPanel } from './ThemeEditorPanel';
 import { PaymentSettingsPanel } from './PaymentSettingsPanel';
 import { DeploySeoPanel, TelegramSettingsPanel } from './TelegramDeployPanels';
@@ -96,9 +97,11 @@ export function AdminDashboard({
   const [orderFilter, setOrderFilter] = useState<'ALL' | 'PAID' | 'PENDING' | 'CANCELLED'>('ALL');
   const [productSearch, setProductSearch] = useState('');
 
-  // Product editor state
+  // Product editor & order verification state
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [verifyingOrder, setVerifyingOrder] = useState<Order | null>(null);
+  const [verificationNotice, setVerificationNotice] = useState<string | null>(null);
   const [busyActionId, setBusyActionId] = useState<string | null>(null);
 
   const fetchOverview = useCallback(async () => {
@@ -174,30 +177,6 @@ export function AdminDashboard({
       const res = await fetch(`/api/admin/products/${encodeURIComponent(product.id)}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${adminToken}` },
-      });
-      if (res.ok) {
-        await handleRefreshAll();
-      }
-    } finally {
-      setBusyActionId(null);
-    }
-  };
-
-  const handleUpdateOrderStatus = async (order: Order, nextStatus: Order['status']) => {
-    setBusyActionId(order.id);
-    try {
-      if (isStaticMode) {
-        updateStaticOrderStatus(order.id, nextStatus);
-        await handleRefreshAll();
-        return;
-      }
-      const res = await fetch(`/api/admin/orders/${encodeURIComponent(order.id)}/status`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify({ status: nextStatus }),
       });
       if (res.ok) {
         await handleRefreshAll();
@@ -438,6 +417,58 @@ export function AdminDashboard({
                     </div>
                   </div>
 
+                  {/* Instant Verification Notice Banner */}
+                  {verificationNotice && (
+                    <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-medium text-emerald-950 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-100">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                        <span>{verificationNotice}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setVerificationNotice(null)}
+                        className="cursor-pointer text-[11px] font-semibold underline-offset-2 hover:underline"
+                      >
+                        Tutup
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Highlight Queue for Orders with Transfer Proof Submitted */}
+                  {(() => {
+                    const submittedQueue = overview.orders.filter(
+                      (o) => o.status === 'PAYMENT_SUBMITTED',
+                    );
+                    if (submittedQueue.length === 0) return null;
+                    return (
+                      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50/80 px-4 py-3.5 text-xs dark:border-blue-900/60 dark:bg-blue-950/35">
+                        <div className="flex items-start gap-2.5">
+                          <ShieldCheck
+                            className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400"
+                            aria-hidden="true"
+                          />
+                          <div>
+                            <p className="font-semibold text-blue-950 dark:text-blue-100">
+                              {submittedQueue.length} pesanan telah mengirimkan konfirmasi transfer
+                            </p>
+                            <p className="mt-0.5 text-blue-800 dark:text-blue-200">
+                              Verifikasi mutasi secara instan untuk langsung mengirim link produk otomatis via Telegram.
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setVerifyingOrder(submittedQueue[0])}
+                          style={{ backgroundColor: 'var(--store-accent)' }}
+                          className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg px-3.5 text-xs font-semibold text-white hover:opacity-90 whitespace-nowrap"
+                        >
+                          <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>Verifikasi {submittedQueue[0].invoiceCode}</span>
+                        </button>
+                      </div>
+                    );
+                  })()}
+
                   {/* Orders Table Container */}
                   <div className="rounded-xl border border-slate-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
                     <div className="flex flex-col gap-3 border-b border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-zinc-800">
@@ -515,6 +546,11 @@ export function AdminDashboard({
                                   <p className="mt-0.5 text-slate-500 dark:text-zinc-400">
                                     {order.customerEmail}
                                   </p>
+                                  {order.transferProofNote && (
+                                    <p className="mt-1 max-w-[200px] truncate font-medium text-emerald-700 dark:text-emerald-400">
+                                      Bukti: {order.transferProofNote}
+                                    </p>
+                                  )}
                                 </td>
                                 <td className="max-w-[220px] px-4 py-3.5 align-top">
                                   {order.items.map((item) => (
@@ -544,7 +580,9 @@ export function AdminDashboard({
                                         ? 'text-emerald-700 dark:text-emerald-400'
                                         : order.status === 'CANCELLED'
                                           ? 'text-red-700 dark:text-red-400'
-                                          : 'text-amber-700 dark:text-amber-400'
+                                          : order.status === 'PAYMENT_SUBMITTED'
+                                            ? 'text-blue-700 dark:text-blue-400'
+                                            : 'text-amber-700 dark:text-amber-400'
                                     }`}
                                   >
                                     {order.status === 'PAID' && <CheckCircle2 className="h-3.5 w-3.5" />}
@@ -578,11 +616,11 @@ export function AdminDashboard({
                                       order.status === 'PAYMENT_SUBMITTED') && (
                                       <button
                                         type="button"
-                                        disabled={busyActionId === order.id}
-                                        onClick={() => handleUpdateOrderStatus(order, 'PAID')}
-                                        className="h-7 cursor-pointer rounded border border-emerald-300 bg-emerald-50 px-2.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100 whitespace-nowrap dark:border-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-300"
+                                        onClick={() => setVerifyingOrder(order)}
+                                        className="inline-flex h-7 cursor-pointer items-center gap-1 rounded border border-emerald-300 bg-emerald-50 px-2.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100 whitespace-nowrap dark:border-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-300"
                                       >
-                                        Tandai Lunas
+                                        <ShieldCheck className="h-3 w-3" aria-hidden="true" />
+                                        <span>Verifikasi &amp; Kirim Link</span>
                                       </button>
                                     )}
                                     <button
@@ -815,6 +853,22 @@ export function AdminDashboard({
             setEditingProduct(null);
           }}
           onSaved={handleRefreshAll}
+        />
+      )}
+
+      {/* Manual Order Verification & Automatic Telegram Link Delivery Modal */}
+      {overview && verifyingOrder && (
+        <OrderVerificationModal
+          order={verifyingOrder}
+          storeName={overview.settings.theme.storeName}
+          adminToken={adminToken}
+          isStaticMode={isStaticMode}
+          serverlessAvailable={Boolean(serverlessHealth?.ok)}
+          onClose={() => setVerifyingOrder(null)}
+          onVerified={(notice) => {
+            setVerificationNotice(notice);
+            void handleRefreshAll();
+          }}
         />
       )}
     </div>

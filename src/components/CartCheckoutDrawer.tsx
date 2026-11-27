@@ -119,6 +119,7 @@ export function CartCheckoutDrawer({
   const [gatewayPaymentUrl, setGatewayPaymentUrl] = useState<string | null>(null);
   const [copiedAccount, setCopiedAccount] = useState(false);
   const [copiedNominal, setCopiedNominal] = useState(false);
+  const [transferProofNote, setTransferProofNote] = useState('');
 
   useEffect(() => {
     if (enabledMethods.length > 0 && !enabledMethods.some((m) => m.id === paymentMethod)) {
@@ -358,6 +359,7 @@ export function CartCheckoutDrawer({
           adminBankNumber: order.adminBankNumber,
           adminBankHolder: order.adminBankHolder,
           adminTransferAmount: order.adminTransferAmount,
+          transferProofNote: order.transferProofNote,
         }),
       });
       const tgData = (await tgRes.json().catch(() => null)) as
@@ -504,28 +506,37 @@ export function CartCheckoutDrawer({
     if (!activeOrder) return;
     setError(null);
     setSubmitting(true);
+    const cleanedProof = transferProofNote.trim().slice(0, 200);
     try {
       if (isStaticMode) {
-        const tgRes = await notifyServerlessTelegram(activeOrder, 'transfer_submitted');
+        const orderWithProof: Order = {
+          ...activeOrder,
+          transferProofNote: cleanedProof || activeOrder.transferProofNote,
+        };
+        const tgRes = await notifyServerlessTelegram(orderWithProof, 'transfer_submitted');
         const updated =
           updateStaticOrder(activeOrder.id, {
             status: 'PAYMENT_SUBMITTED',
+            transferProofNote: cleanedProof || activeOrder.transferProofNote,
             telegramStatus: tgRes.status || activeOrder.telegramStatus,
             telegramMessage: tgRes.detail || activeOrder.telegramMessage,
             telegramTransferMessageId: tgRes.messageId || activeOrder.telegramTransferMessageId,
           }) || {
-            ...activeOrder,
+            ...orderWithProof,
             status: 'PAYMENT_SUBMITTED' as const,
             telegramTransferMessageId: tgRes.messageId || activeOrder.telegramTransferMessageId,
           };
         setActiveOrder(updated);
         saveActiveOrderSession(updated);
+        setTransferProofNote('');
         onOrderCompleted();
         return;
       }
 
       const res = await fetch(`/api/orders/${encodeURIComponent(activeOrder.id)}/submit-transfer`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transferProofNote: cleanedProof }),
       });
       const data = (await res.json()) as { order?: Order; error?: string };
       if (!res.ok || !data.order) {
@@ -533,6 +544,7 @@ export function CartCheckoutDrawer({
       }
       setActiveOrder(data.order);
       saveActiveOrderSession(data.order);
+      setTransferProofNote('');
       onOrderCompleted();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Gagal mengirim konfirmasi transfer.');
@@ -994,9 +1006,27 @@ export function CartCheckoutDrawer({
                     </div>
                   </div>
 
+                  <div className="mt-4 text-left">
+                    <label
+                      htmlFor="transfer-proof-note"
+                      className="block text-[11px] font-semibold text-emerald-950 dark:text-emerald-100"
+                    >
+                      Catatan / Nomor Referensi Bukti Transfer (Opsional)
+                    </label>
+                    <input
+                      id="transfer-proof-note"
+                      type="text"
+                      maxLength={200}
+                      value={transferProofNote}
+                      onChange={(e) => setTransferProofNote(e.target.value)}
+                      placeholder="Mis. Transfer dari BCA a.n. Budi jam 14:20"
+                      className="mt-1 h-9 w-full rounded-lg border border-emerald-200 bg-white px-3 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none dark:border-emerald-900/60 dark:bg-zinc-950 dark:text-zinc-100"
+                    />
+                  </div>
+
                   <p className="mt-3 text-center text-xs leading-relaxed text-emerald-900 dark:text-emerald-200">
                     Silakan transfer sesuai nominal di atas, lalu tekan tombol{' '}
-                    <strong>Saya Sudah Transfer</strong> di bawah ini.
+                    <strong>Saya Sudah Transfer</strong> di bawah ini agar Admin memverifikasi mutasi.
                   </p>
                 </div>
               )}

@@ -25,6 +25,7 @@ import {
 } from './server/store.js';
 import {
   buildOrderTelegramMessage,
+  buildTelegramHelpMessage,
   dispatchTelegramNotification,
   getTelegramConnectionStatus,
   notifyLowStockIfNeeded,
@@ -412,6 +413,19 @@ async function startServer() {
     });
   });
 
+  // Helper to resolve public base URL for automatic Telegram download links
+  const getRequestBaseUrl = (req: Request, canonicalUrl?: string): string => {
+    const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim();
+    const host = String(req.headers['x-forwarded-host'] || req.get('host') || '').split(',')[0].trim();
+    if (host) {
+      return `${proto}://${host}`;
+    }
+    if (canonicalUrl && isSafeUrlOrPath(canonicalUrl)) {
+      return canonicalUrl.replace(/\/+$/, '');
+    }
+    return (process.env.APP_URL || 'https://karsadigital.vercel.app').replace(/\/+$/, '');
+  };
+
   // PUBLIC: Buyer marks that they have transferred to the bank account sent by admin via Telegram
   app.post('/api/orders/:id/submit-transfer', async (req, res) => {
     const db = loadDatabase();
@@ -427,6 +441,11 @@ async function startServer() {
     if (order.status === 'AWAITING_BANK') {
       res.status(409).json({ error: 'Menunggu admin mengirim detail rekening bank melalui Telegram terlebih dahulu.' });
       return;
+    }
+
+    const proofNote = String(req.body?.transferProofNote || '').trim().slice(0, 200);
+    if (proofNote) {
+      order.transferProofNote = proofNote;
     }
 
     if (order.status === 'PENDING') {
@@ -650,14 +669,16 @@ async function startServer() {
     res.json({ order });
   });
 
-  // ADMIN: Manually confirm order as PAID (backup to Telegram LUNAS reply)
-  app.post('/api/admin/orders/:id/confirm-paid', requireAdmin, (req, res) => {
+  // ADMIN: Manually confirm order as PAID and automatically send product download links via Telegram
+  app.post('/api/admin/orders/:id/confirm-paid', requireAdmin, async (req, res) => {
     const db = loadDatabase();
     const order = db.orders.find((o) => o.id === req.params.id);
     if (!order) {
       res.status(404).json({ error: 'Pesanan tidak ditemukan.' });
       return;
     }
+    const extraDeliveryNote = String(req.body?.extraDeliveryNote || '').trim().slice(0, 300);
+
     if (order.status !== 'PAID') {
       order.status = 'PAID';
       order.paidAt = new Date().toISOString();
@@ -667,7 +688,22 @@ async function startServer() {
       }
       saveDatabase(db);
     }
-    res.json({ order });
+
+    const baseUrl = getRequestBaseUrl(req, db.settings.seo.canonicalUrl);
+    const msg = buildOrderTelegramMessage(order, db.settings, 'paid', {
+      baseUrl,
+      extraDeliveryNote,
+    });
+    const telegramResult = await dispatchTelegramNotification({
+      event: 'order_paid',
+      text: msg,
+      orderId: order.id,
+    });
+    order.telegramStatus = telegramResult.status;
+    order.telegramMessage = telegramResult.detail;
+    saveDatabase(db);
+
+    res.json({ order, telegramResult, overview: buildAdminOverview() });
   });
 
   // ADMIN: Upload digital product file or product cover image
@@ -915,7 +951,8 @@ async function startServer() {
       }
       saveDatabase(db);
       if (db.settings.telegram.notifyOnOrderPaid) {
-        const msg = buildOrderTelegramMessage(order, db.settings, 'paid');
+        const baseUrl = getRequestBaseUrl(req, db.settings.seo.canonicalUrl);
+        const msg = buildOrderTelegramMessage(order, db.settings, 'paid', { baseUrl });
         const result = await dispatchTelegramNotification({
           event: 'order_paid',
           text: msg,
@@ -1013,6 +1050,17 @@ async function startServer() {
         res.status(400).json({ error: 'URL gambar QRIS tidak valid.' });
         return;
       }
+      const merchantName = String(payment.merchantName ?? db.settings.payment.merchantName).trim().slice(0, 80);
+      if (merchantName.length < 2) {
+        res.status(400).json({ error: 'Nama merchant minimal 2 karakter.' });
+        return;
+      }
+      const expiryMinutes = Number(payment.expiryMinutes ?? db.settings.payment.expiryMinutes);
+      if (!Number.isFinite(expiryMinutes) || expiryMinutes < 5 || expiryMinutes > 1440) {
+        res.status(400).json({ error: 'Batas waktu pembayaran harus antara 5 hingga 1440 menit.' });
+        return;
+      }
+
       const nextMethods = Array.isArray(payment.methods)
         ? payment.methods
             .filter((m) => VALID_PAYMENT_METHODS.has(m.id))
@@ -1026,6 +1074,49 @@ async function startServer() {
             }))
         : db.settings.payment.methods;
 
+      if (nextMethods.filter((m) => m.enabled).length === 0) {
+        res.status(400).json({ error: 'Minimal satu metode pembayaran harus diaktifkan.' });
+        return;
+      }
+
+      for (const m of nextMethods) {
+        if (!m.enabled || m.id === 'telegram_bank') continue;
+        if (m.id === 'bank_transfer') {
+          if (m.label.length < 3 || !/[a-zA-Z]{2,}/.test(m.label)) {
+            res.status(400).json({
+              error: 'Nama bank untuk Transfer Rekening Bank wajib diisi dengan benar (minimal 3 huruf, mis. Bank BCA / BRI).',
+            });
+            return;
+          }
+          const cleanDigits = m.accountNumber.replace(/[\s-]/g, '');
+          if (!/^\d{6,25}$/.test(cleanDigits)) {
+            res.status(400).json({
+              error: 'Format nomor rekening bank tidak valid (harus berupa 6–25 digit angka).',
+            });
+            return;
+          }
+          if (m.accountHolder.length < 3) {
+            res.status(400).json({
+              error: 'Nama pemilik rekening (Atas Nama) wajib diisi minimal 3 karakter.',
+            });
+            return;
+          }
+        } else if (m.id === 'qris') {
+          if (!/^[a-zA-Z0-9._-]{6,60}$/.test(m.accountNumber.replace(/\s+/g, ''))) {
+            res.status(400).json({ error: 'Format NMID / ID Merchant QRIS tidak valid (minimal 6 karakter).' });
+            return;
+          }
+        } else {
+          const cleanDigits = m.accountNumber.replace(/[\s-]/g, '');
+          if (!/^\d{8,25}$/.test(cleanDigits)) {
+            res.status(400).json({
+              error: `Nomor tujuan untuk ${m.label} harus berupa 8–25 digit angka yang valid.`,
+            });
+            return;
+          }
+        }
+      }
+
       db.settings.payment = {
         ...db.settings.payment,
         provider:
@@ -1035,13 +1126,10 @@ async function startServer() {
           payment.provider === 'builtin_auto'
             ? payment.provider
             : db.settings.payment.provider,
-        merchantName: String(payment.merchantName ?? db.settings.payment.merchantName).trim().slice(0, 80),
+        merchantName,
         qrisMerchantId: String(payment.qrisMerchantId ?? db.settings.payment.qrisMerchantId).trim().slice(0, 60),
         qrisImageUrl: String(payment.qrisImageUrl ?? db.settings.payment.qrisImageUrl).trim(),
-        expiryMinutes: Math.max(
-          5,
-          Math.min(1440, Math.floor(Number(payment.expiryMinutes ?? db.settings.payment.expiryMinutes))),
-        ),
+        expiryMinutes: Math.floor(expiryMinutes),
         autoConfirmDemo: Boolean(payment.autoConfirmDemo ?? db.settings.payment.autoConfirmDemo),
         methods: nextMethods.length > 0 ? nextMethods : db.settings.payment.methods,
       };
@@ -1069,6 +1157,17 @@ async function startServer() {
 
     const result = await dispatchTelegramNotification({
       event: 'test',
+      text,
+    });
+    res.json({ result, overview: buildAdminOverview() });
+  });
+
+  // ADMIN: Send /help command guide directly to Telegram chat
+  app.post('/api/admin/telegram/help', requireAdmin, async (_req, res) => {
+    const db = loadDatabase();
+    const text = buildTelegramHelpMessage(db.settings.theme.storeName);
+    const result = await dispatchTelegramNotification({
+      event: 'help',
       text,
     });
     res.json({ result, overview: buildAdminOverview() });

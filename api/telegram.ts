@@ -12,13 +12,21 @@ interface VercelResponse extends ServerResponse {
 }
 
 interface OrderItemInput {
+  productId?: string;
   title?: string;
   quantity?: number;
   price?: number;
+  fileName?: string;
+}
+
+interface DownloadLinkInput {
+  title?: string;
+  fileName?: string;
+  url?: string;
 }
 
 interface TelegramRequestBody {
-  event?: 'order_created' | 'transfer_submitted' | 'order_paid' | 'test';
+  event?: 'order_created' | 'transfer_submitted' | 'order_paid' | 'test' | 'help';
   storeName?: string;
   invoiceCode?: string;
   customerName?: string;
@@ -28,6 +36,9 @@ interface TelegramRequestBody {
   paymentReference?: string;
   totalAmount?: number;
   items?: OrderItemInput[];
+  downloadLinks?: DownloadLinkInput[];
+  extraDeliveryNote?: string;
+  transferProofNote?: string;
   chatIdOverride?: string;
   messageHeader?: string;
   adminBankName?: string;
@@ -408,18 +419,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     event !== 'order_created' &&
     event !== 'transfer_submitted' &&
     event !== 'order_paid' &&
-    event !== 'test'
+    event !== 'test' &&
+    event !== 'help'
   ) {
     res.status(400).json({ error: 'Jenis event Telegram tidak valid.' });
     return;
   }
 
-  // If ADMIN_PASSCODE is configured on Vercel, verify it for manual test pings
+  // If ADMIN_PASSCODE is configured on Vercel, verify it for manual admin pings
   const envPasscode = (process.env.ADMIN_PASSCODE || '').trim();
-  if (event === 'test' && envPasscode) {
+  if ((event === 'test' || event === 'help') && envPasscode) {
     const provided = String(req.headers['x-admin-passcode'] || '').trim();
     if (!provided || !safeEqual(provided, envPasscode)) {
-      res.status(401).json({ error: 'ADMIN_PASSCODE diperlukan untuk uji koneksi Telegram.' });
+      res.status(401).json({ error: 'ADMIN_PASSCODE diperlukan untuk mengirim pesan admin Telegram.' });
       return;
     }
   }
@@ -433,7 +445,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const totalAmount = Math.max(0, Math.round(Number(body.totalAmount || 0)));
 
   let text = '';
-  if (event === 'test') {
+  if (event === 'help') {
+    text = [
+      `PANDUAN PERINTAH BOT TELEGRAM (/help) — ${storeName}`,
+      '',
+      '1. KIRIM REKENING & NOMINAL KE PEMBELI (Balas / Reply pesan pesanan):',
+      '   Format singkat:',
+      '   BCA | 1234567890 | 129123',
+      '   Format + Atas Nama:',
+      '   BCA | 1234567890 | 129123 | Nama Pemilik',
+      '   Atau pisah dengan Enter (3 baris):',
+      '   BCA',
+      '   1234567890',
+      '   129123',
+      '',
+      '2. KIRIM REKENING TANPA REPLY (Pakai Nomor Invoice):',
+      '   /bayar INV-2026-1002 | BCA | 1234567890 | 129123',
+      '',
+      '3. VERIFIKASI LUNAS & BUKA LINK PRODUK:',
+      '   Balas (Reply) pesan pesanan/transfer dengan:',
+      '   LUNAS  (bisa juga: OK / ACC / KONFIRMASI)',
+      '   Atau ketik: /lunas INV-2026-1002',
+      '',
+      '4. BATALKAN PESANAN:',
+      '   Balas (Reply) pesan pesanan dengan: BATAL',
+      '   Atau ketik: /batal INV-2026-1002',
+      '',
+      'Catatan Keamanan: Bot hanya menerima perintah dari TELEGRAM_CHAT_ID admin.',
+    ].join('\n');
+  } else if (event === 'test') {
     text = [
       `Uji Koneksi Bot Telegram — ${storeName}`,
       `Waktu: ${new Date().toLocaleString('id-ID')}`,
@@ -443,24 +483,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     const bankName = String(body.adminBankName || 'Bank').slice(0, 60);
     const bankNumber = String(body.adminBankNumber || '-').slice(0, 40);
     const nominal = Math.max(0, Math.round(Number(body.adminTransferAmount || totalAmount)));
-    text = [
+    const proofNote = String(body.transferProofNote || '').trim().slice(0, 200);
+    const lines = [
       `KONFIRMASI TRANSFER PEMBELI — ${storeName}`,
       `Invoice: ${invoiceCode}`,
       `Pembeli: ${customerName}`,
       `Kontak: ${customerPhone}`,
       `Bank Tujuan: ${bankName} (${bankNumber})`,
       `Nominal Transfer: ${formatRupiah(nominal)}`,
+    ];
+    if (proofNote) {
+      lines.push(`Catatan/Bukti Transfer: ${proofNote}`);
+    }
+    lines.push(
       '',
       'Cek mutasi rekening Anda, lalu BALAS (Reply) pesan ini dengan:',
       'LUNAS',
       `(atau kirim: /lunas ${invoiceCode})`,
       'Untuk membatalkan pesanan, balas: BATAL',
-    ].join('\n');
+    );
+    text = lines.join('\n');
   } else {
     const isTelegramBank = body.paymentMethod === 'telegram_bank';
     const statusLabel =
       event === 'order_paid'
-        ? 'LUNAS (File Terkirim Otomatis)'
+        ? 'LUNAS (Link Produk Terkirim Otomatis)'
         : isTelegramBank
           ? 'MENUNGGU REKENING & NOMINAL DARI ADMIN'
           : 'MENUNGGU PEMBAYARAN';
@@ -485,10 +532,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       'Rincian Produk:',
       itemLines || '• Produk Digital',
       '',
-      `Estimasi Total: ${formatRupiah(totalAmount)}`,
+      `Total Bayar: ${formatRupiah(Math.max(0, Math.round(Number(body.adminTransferAmount || totalAmount))))}`,
     ];
 
-    if (event === 'order_created' && isTelegramBank) {
+    if (event === 'order_paid') {
+      const links = Array.isArray(body.downloadLinks) ? body.downloadLinks.slice(0, 15) : [];
+      if (links.length > 0) {
+        lines.push('', 'Tautan Unduhan Produk Digital:');
+        for (const link of links) {
+          const title = String(link.title || 'Produk Digital').slice(0, 100);
+          const fileName = String(link.fileName || '').slice(0, 100);
+          const url = String(link.url || '').trim().slice(0, 300);
+          lines.push(`• ${title}${fileName ? ` (${fileName})` : ''}`);
+          if (/^https?:\/\//i.test(url)) {
+            lines.push(`  ${url}`);
+          }
+        }
+      }
+      const extraNote = String(body.extraDeliveryNote || '').trim().slice(0, 300);
+      if (extraNote) {
+        lines.push('', `Catatan/Link Tambahan Admin: ${extraNote}`);
+      }
+    } else if (event === 'order_created' && isTelegramBank) {
       lines.push(
         '',
         'BALAS (Reply) pesan ini untuk mengirim rekening & nominal ke layar pembeli:',

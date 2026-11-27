@@ -95,6 +95,7 @@ export interface Order {
   adminBankNumber?: string;
   adminBankHolder?: string;
   adminTransferAmount?: number;
+  transferProofNote?: string;
   createdAt: string;
   paidAt?: string;
 }
@@ -134,7 +135,7 @@ export interface TelegramPreferences {
 export interface TelegramLog {
   id: string;
   timestamp: string;
-  event: 'order_created' | 'transfer_submitted' | 'order_paid' | 'low_stock' | 'test';
+  event: 'order_created' | 'transfer_submitted' | 'order_paid' | 'low_stock' | 'test' | 'help';
   orderId?: string;
   status: 'sent' | 'not_configured' | 'failed';
   detail: string;

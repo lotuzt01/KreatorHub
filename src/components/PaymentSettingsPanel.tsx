@@ -1,11 +1,12 @@
-import { useState } from 'react';
-import { AlertCircle, Check, Save } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { AlertCircle, Check, CheckCircle2, Save } from 'lucide-react';
 import type {
   PaymentGatewayProvider,
   PaymentGatewayStatus,
   PaymentMethodConfig,
   PaymentSettings,
 } from '../types/store';
+import { isSafeHttpOrLocalUrl } from '../lib/format';
 import { saveStaticSettings } from '../lib/staticFallback';
 
 interface PaymentSettingsPanelProps {
@@ -17,11 +18,26 @@ interface PaymentSettingsPanelProps {
   onSaved: () => void;
 }
 
+interface PaymentValidationErrors {
+  merchantName?: string;
+  expiryMinutes?: string;
+  qrisImageUrl?: string;
+  methodsGlobal?: string;
+  methods: Record<
+    string,
+    {
+      label?: string;
+      accountNumber?: string;
+      accountHolder?: string;
+    }
+  >;
+}
+
 const PROVIDERS: Array<{ id: PaymentGatewayProvider; label: string; desc: string }> = [
   {
     id: 'builtin_auto',
-    label: 'QRIS & VA Otomatis Bawaan',
-    desc: 'Tampilkan QRIS, nomor VA, dan konfirmasi otomatis langsung di laci checkout.',
+    label: 'Konfirmasi Telegram & Rekening Bawaan',
+    desc: 'Kirim rekening langsung via Telegram Admin atau tampilkan nomor rekening/QRIS di checkout.',
   },
   {
     id: 'midtrans',
@@ -40,6 +56,98 @@ const PROVIDERS: Array<{ id: PaymentGatewayProvider; label: string; desc: string
   },
 ];
 
+function validatePaymentDraft(draft: PaymentSettings): {
+  valid: boolean;
+  errors: PaymentValidationErrors;
+  summary: string[];
+} {
+  const errors: PaymentValidationErrors = { methods: {} };
+  const summary: string[] = [];
+
+  const merchantName = draft.merchantName.trim();
+  if (merchantName.length < 2) {
+    errors.merchantName = 'Nama merchant wajib diisi minimal 2 karakter.';
+    summary.push(errors.merchantName);
+  }
+
+  if (
+    !Number.isFinite(draft.expiryMinutes) ||
+    draft.expiryMinutes < 5 ||
+    draft.expiryMinutes > 1440
+  ) {
+    errors.expiryMinutes = 'Batas waktu pembayaran harus antara 5 hingga 1440 menit.';
+    summary.push(errors.expiryMinutes);
+  }
+
+  const qrisImg = draft.qrisImageUrl.trim();
+  if (qrisImg && !isSafeHttpOrLocalUrl(qrisImg)) {
+    errors.qrisImageUrl = 'URL gambar QRIS harus diawali https://, http://, atau path lokal /...';
+    summary.push(errors.qrisImageUrl);
+  }
+
+  const enabledMethods = draft.methods.filter((m) => m.enabled);
+  if (enabledMethods.length === 0) {
+    errors.methodsGlobal = 'Minimal satu metode pembayaran harus diaktifkan.';
+    summary.push(errors.methodsGlobal);
+  }
+
+  for (const method of enabledMethods) {
+    if (method.id === 'telegram_bank') continue;
+
+    const mErr: { label?: string; accountNumber?: string; accountHolder?: string } = {};
+    const label = method.label.trim();
+    const rawNumber = method.accountNumber.trim();
+    const digitsOnly = rawNumber.replace(/[\s-]/g, '');
+    const holder = method.accountHolder.trim();
+
+    if (method.id === 'bank_transfer') {
+      if (label.length < 3 || !/[a-zA-Z]{2,}/.test(label)) {
+        mErr.label = 'Nama bank wajib diisi dengan benar (min. 3 karakter huruf, mis. Bank BCA / BRI / SeaBank).';
+      }
+      if (!rawNumber) {
+        mErr.accountNumber = 'Nomor rekening bank wajib diisi.';
+      } else if (/[^\d\s-]/.test(rawNumber)) {
+        mErr.accountNumber = 'Nomor rekening hanya boleh berisi angka (boleh spasi atau tanda strip).';
+      } else if (!/^\d{6,25}$/.test(digitsOnly)) {
+        mErr.accountNumber = 'Nomor rekening harus terdiri dari 6 hingga 25 digit angka.';
+      } else if (digitsOnly === '1234567890') {
+        mErr.accountNumber = 'Ganti nomor contoh 1234567890 dengan nomor rekening asli Anda.';
+      }
+
+      if (holder.length < 3 || /^nama pemilik rekening$/i.test(holder)) {
+        mErr.accountHolder = 'Isi nama asli pemilik rekening sesuai buku tabungan (min. 3 karakter).';
+      }
+    } else if (method.id === 'qris') {
+      if (!/^[a-zA-Z0-9._-]{6,60}$/.test(rawNumber.replace(/\s+/g, ''))) {
+        mErr.accountNumber = 'NMID / ID Merchant QRIS minimal 6 karakter alfanumerik tanpa simbol aneh.';
+      }
+      if (holder.length < 2) {
+        mErr.accountHolder = 'Atas nama penerima QRIS wajib diisi minimal 2 karakter.';
+      }
+    } else {
+      if (!rawNumber) {
+        mErr.accountNumber = `Nomor tujuan untuk ${label || method.id} wajib diisi.`;
+      } else if (/[^\d\s-]/.test(rawNumber)) {
+        mErr.accountNumber = 'Nomor VA / E-Wallet hanya boleh berisi angka.';
+      } else if (!/^\d{8,25}$/.test(digitsOnly)) {
+        mErr.accountNumber = 'Nomor VA / E-Wallet harus terdiri dari 8 hingga 25 digit angka.';
+      }
+      if (holder.length < 2) {
+        mErr.accountHolder = 'Atas nama penerima wajib diisi minimal 2 karakter.';
+      }
+    }
+
+    if (mErr.label || mErr.accountNumber || mErr.accountHolder) {
+      errors.methods[method.id] = mErr;
+      if (mErr.label) summary.push(`${method.label || 'Rekening Bank'}: ${mErr.label}`);
+      if (mErr.accountNumber) summary.push(`${method.label || method.id}: ${mErr.accountNumber}`);
+      if (mErr.accountHolder) summary.push(`${method.label || method.id}: ${mErr.accountHolder}`);
+    }
+  }
+
+  return { valid: summary.length === 0, errors, summary };
+}
+
 export function PaymentSettingsPanel({
   payment,
   status,
@@ -50,9 +158,13 @@ export function PaymentSettingsPanel({
 }: PaymentSettingsPanelProps) {
   const [draft, setDraft] = useState<PaymentSettings>(payment);
   const [saving, setSaving] = useState(false);
+  const [touched, setTouched] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
+  const validation = useMemo(() => validatePaymentDraft(draft), [draft]);
+
   const updateMethod = (id: PaymentMethodConfig['id'], patch: Partial<PaymentMethodConfig>) => {
+    setFeedback(null);
     setDraft((prev) => ({
       ...prev,
       methods: prev.methods.map((m) => (m.id === id ? { ...m, ...patch } : m)),
@@ -60,22 +172,45 @@ export function PaymentSettingsPanel({
   };
 
   const handleSave = async () => {
+    setTouched(true);
     setFeedback(null);
-    const activeCount = draft.methods.filter((m) => m.enabled).length;
-    if (activeCount === 0) {
-      setFeedback({ type: 'err', text: 'Minimal satu metode pembayaran harus diaktifkan.' });
+
+    const check = validatePaymentDraft(draft);
+    if (!check.valid) {
+      setFeedback({
+        type: 'err',
+        text: `Periksa kembali format input sebelum menyimpan: ${check.summary[0]}`,
+      });
       return;
     }
+
+    // Normalize whitespace in bank & account fields cleanly before saving
+    const normalizedDraft: PaymentSettings = {
+      ...draft,
+      merchantName: draft.merchantName.trim(),
+      qrisMerchantId: draft.qrisMerchantId.trim(),
+      qrisImageUrl: draft.qrisImageUrl.trim(),
+      methods: draft.methods.map((m) => ({
+        ...m,
+        label: m.label.trim(),
+        accountNumber:
+          m.id === 'telegram_bank' || m.id === 'qris'
+            ? m.accountNumber.trim()
+            : m.accountNumber.replace(/[\s-]+/g, ''),
+        accountHolder: m.accountHolder.trim(),
+      })),
+    };
 
     setSaving(true);
     try {
       if (isStaticMode) {
-        saveStaticSettings({ payment: draft });
+        saveStaticSettings({ payment: normalizedDraft });
+        setDraft(normalizedDraft);
         setFeedback({
           type: 'ok',
           text: serverlessAvailable
-            ? 'Pengaturan pembayaran disimpan dan langsung aktif di halaman checkout.'
-            : 'Pengaturan pembayaran disimpan lokal di browser dan langsung aktif di checkout.',
+            ? 'Pengaturan pembayaran valid, disimpan, dan langsung aktif di halaman checkout.'
+            : 'Pengaturan pembayaran valid dan disimpan lokal di browser.',
         });
         onSaved();
         return;
@@ -87,11 +222,12 @@ export function PaymentSettingsPanel({
           'Content-Type': 'application/json',
           Authorization: `Bearer ${adminToken}`,
         },
-        body: JSON.stringify({ payment: draft }),
+        body: JSON.stringify({ payment: normalizedDraft }),
       });
       const data = (await res.json()) as { error?: string };
       if (!res.ok) throw new Error(data.error || 'Gagal menyimpan pengaturan pembayaran.');
-      setFeedback({ type: 'ok', text: 'Pengaturan pembayaran otomatis berhasil disimpan.' });
+      setDraft(normalizedDraft);
+      setFeedback({ type: 'ok', text: 'Pengaturan pembayaran berhasil divalidasi dan disimpan.' });
       onSaved();
     } catch (err) {
       setFeedback({
@@ -108,10 +244,10 @@ export function PaymentSettingsPanel({
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-4 dark:border-zinc-800">
         <div>
           <h2 className="font-display text-xl font-bold text-slate-900 dark:text-zinc-50">
-            Pengaturan Pembayaran Otomatis
+            Pengaturan Pembayaran
           </h2>
           <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
-            Atur penyedia payment gateway, metode bayar aktif, nomor QRIS/VA, serta batas waktu pembayaran.
+            Atur kanal pembayaran, validasi format nama bank &amp; nomor rekening, serta batas waktu pesanan.
           </p>
         </div>
 
@@ -135,9 +271,8 @@ export function PaymentSettingsPanel({
               Anda sedang membuka versi statis GitHub Pages (tanpa server backend).
             </p>
             <p className="mt-1">
-              Semua pengaturan metode bayar, nomor VA, dan QRIS di bawah tetap berfungsi di checkout. Untuk
-              pembayaran otomatis nyata (Midtrans Snap + Webhook) secara gratis, hubungkan repositori GitHub
-              Anda ke <strong>Vercel</strong>—endpoint <span className="font-mono">/api/payment</span> sudah siap pakai.
+              Semua pengaturan metode bayar tetap berfungsi di browser ini. Untuk konfirmasi Telegram 2-arah
+              dan pembayaran otomatis nyata gratis, gunakan deployment <strong>Vercel</strong> Anda.
             </p>
           </div>
         </div>
@@ -156,7 +291,16 @@ export function PaymentSettingsPanel({
           ) : (
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
           )}
-          <span>{feedback.text}</span>
+          <div>
+            <p>{feedback.text}</p>
+            {feedback.type === 'err' && validation.summary.length > 1 && (
+              <ul className="mt-1.5 list-disc space-y-0.5 pl-4 font-normal">
+                {validation.summary.slice(1).map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
       )}
 
@@ -225,45 +369,65 @@ export function PaymentSettingsPanel({
               })}
             </div>
 
-            <div className="grid gap-3 pt-1 sm:grid-cols-2">
+            <div className="space-y-3 border-t border-slate-200 pt-4 dark:border-zinc-800">
               <div>
                 <label className="block text-xs font-medium text-slate-600 dark:text-zinc-400">
-                  Nama Merchant
+                  Nama Merchant / Pemilik Toko
                 </label>
                 <input
                   type="text"
                   value={draft.merchantName}
                   onChange={(e) => setDraft({ ...draft, merchantName: e.target.value })}
-                  className="mt-1 h-9 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                  className={`mt-1 h-9 w-full rounded-lg border bg-white px-3 text-sm text-slate-900 dark:bg-zinc-950 dark:text-zinc-100 ${
+                    touched && validation.errors.merchantName
+                      ? 'border-red-500 focus:outline-none'
+                      : 'border-slate-300 dark:border-zinc-700'
+                  }`}
                 />
+                {touched && validation.errors.merchantName && (
+                  <p className="mt-1 text-[11px] font-medium text-red-600 dark:text-red-400">
+                    {validation.errors.merchantName}
+                  </p>
+                )}
               </div>
+
               <div>
                 <label className="block text-xs font-medium text-slate-600 dark:text-zinc-400">
-                  NMID QRIS
+                  ID Merchant QRIS (NMID — Opsional)
                 </label>
                 <input
                   type="text"
                   value={draft.qrisMerchantId}
                   onChange={(e) => setDraft({ ...draft, qrisMerchantId: e.target.value })}
-                  placeholder="ID1026xxxxxxxxx"
                   className="mt-1 h-9 w-full rounded-lg border border-slate-300 bg-white px-3 font-mono text-xs text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
                 />
               </div>
-              <div className="sm:col-span-2">
+
+              <div>
                 <label className="block text-xs font-medium text-slate-600 dark:text-zinc-400">
                   URL Gambar QRIS Statis (Opsional)
                 </label>
                 <input
-                  type="url"
+                  type="text"
                   value={draft.qrisImageUrl}
                   onChange={(e) => setDraft({ ...draft, qrisImageUrl: e.target.value })}
                   placeholder="https://.../qris-toko-anda.png"
-                  className="mt-1 h-9 w-full rounded-lg border border-slate-300 bg-white px-3 font-mono text-xs text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                  className={`mt-1 h-9 w-full rounded-lg border bg-white px-3 font-mono text-xs text-slate-900 dark:bg-zinc-950 dark:text-zinc-100 ${
+                    touched && validation.errors.qrisImageUrl
+                      ? 'border-red-500 focus:outline-none'
+                      : 'border-slate-300 dark:border-zinc-700'
+                  }`}
                 />
+                {touched && validation.errors.qrisImageUrl && (
+                  <p className="mt-1 text-[11px] font-medium text-red-600 dark:text-red-400">
+                    {validation.errors.qrisImageUrl}
+                  </p>
+                )}
               </div>
+
               <div>
                 <label className="block text-xs font-medium text-slate-600 dark:text-zinc-400">
-                  Batas Bayar (Menit)
+                  Batas Waktu Pembayaran (menit)
                 </label>
                 <input
                   type="number"
@@ -271,16 +435,25 @@ export function PaymentSettingsPanel({
                   max={1440}
                   value={draft.expiryMinutes}
                   onChange={(e) =>
-                    setDraft({ ...draft, expiryMinutes: Number(e.target.value || 30) })
+                    setDraft({ ...draft, expiryMinutes: Number(e.target.value || 0) })
                   }
-                  className="mt-1 h-9 w-full rounded-lg border border-slate-300 bg-white px-3 font-mono text-sm tabular-nums text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                  className={`mt-1 h-9 w-full rounded-lg border bg-white px-3 font-mono text-sm tabular-nums text-slate-900 dark:bg-zinc-950 dark:text-zinc-100 ${
+                    touched && validation.errors.expiryMinutes
+                      ? 'border-red-500 focus:outline-none'
+                      : 'border-slate-300 dark:border-zinc-700'
+                  }`}
                 />
+                {touched && validation.errors.expiryMinutes && (
+                  <p className="mt-1 text-[11px] font-medium text-red-600 dark:text-red-400">
+                    {validation.errors.expiryMinutes}
+                  </p>
+                )}
               </div>
             </div>
           </div>
         </div>
 
-        {/* Right: Payment Methods Toggle & Account Numbers */}
+        {/* Right: Payment Methods Toggle & Validated Account Numbers */}
         <div className="space-y-5 lg:col-span-7">
           <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -289,21 +462,22 @@ export function PaymentSettingsPanel({
                   Kanal Pembayaran Aktif
                 </h3>
                 <p className="mt-0.5 text-xs text-slate-500 dark:text-zinc-400">
-                  Aktifkan atau nonaktifkan kanal serta sesuaikan nomor rekening / VA penerima.
+                  Format nama bank, nomor rekening (6–25 digit angka), dan atas nama divalidasi sebelum disimpan.
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
+                    setFeedback(null);
                     setDraft((prev) => ({
                       ...prev,
                       methods: prev.methods.map((m) => ({
                         ...m,
                         enabled: m.id === 'telegram_bank',
                       })),
-                    }))
-                  }
+                    }));
+                  }}
                   style={{ backgroundColor: 'var(--store-accent)' }}
                   className="h-8 cursor-pointer rounded-lg px-3 text-xs font-semibold text-white hover:opacity-90 whitespace-nowrap"
                 >
@@ -311,15 +485,16 @@ export function PaymentSettingsPanel({
                 </button>
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
+                    setFeedback(null);
                     setDraft((prev) => ({
                       ...prev,
                       methods: prev.methods.map((m) => ({
                         ...m,
                         enabled: m.id === 'bank_transfer',
                       })),
-                    }))
-                  }
+                    }));
+                  }}
                   className="h-8 cursor-pointer rounded-lg border border-slate-300 bg-slate-50 px-3 text-xs font-semibold text-slate-800 hover:bg-slate-100 whitespace-nowrap dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
                 >
                   Rekening Tetap Saja
@@ -327,93 +502,154 @@ export function PaymentSettingsPanel({
               </div>
             </div>
 
+            {touched && validation.errors.methodsGlobal && (
+              <p className="mt-3 text-xs font-medium text-red-600 dark:text-red-400">
+                {validation.errors.methodsGlobal}
+              </p>
+            )}
+
             <div className="mt-4 divide-y divide-slate-200 border-t border-slate-200 dark:divide-zinc-800 dark:border-zinc-800">
-              {draft.methods.map((method) => (
-                <div key={method.id} className="space-y-3 py-4 first:pt-4 last:pb-0">
-                  <div className="flex items-center justify-between gap-3">
-                    <label className="flex cursor-pointer items-center gap-2.5">
-                      <input
-                        type="checkbox"
-                        checked={method.enabled}
-                        onChange={(e) => updateMethod(method.id, { enabled: e.target.checked })}
-                        className="h-4 w-4 rounded border-slate-300"
-                      />
-                      <span className="text-sm font-semibold text-slate-900 dark:text-zinc-100">
-                        {method.label}
-                      </span>
-                    </label>
-                    <span className="font-mono text-[11px] text-slate-500 dark:text-zinc-400">
-                      {method.enabled ? 'Aktif' : 'Nonaktif'}
-                    </span>
-                  </div>
+              {draft.methods.map((method) => {
+                const mErr = validation.errors.methods[method.id];
+                const hasError = Boolean(touched && mErr);
+                const isBankValid =
+                  method.enabled && method.id !== 'telegram_bank' && !mErr;
 
-                  {method.enabled && method.id === 'telegram_bank' && (
-                    <div className="ml-6 rounded-lg border border-blue-200 bg-blue-50/60 p-3 text-xs leading-relaxed text-slate-700 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-zinc-300">
-                      <p className="font-semibold text-slate-900 dark:text-zinc-100">
-                        Cara membalas pesanan di Telegram:
-                      </p>
-                      <p className="mt-1">
-                        Saat pembeli checkout, bot akan mengirim pesan pesanan ke Telegram Anda. Cukup{' '}
-                        <strong>Reply (Balas)</strong> pesan tersebut dengan format:
-                      </p>
-                      <p className="mt-1.5 rounded border border-blue-200 bg-white px-2.5 py-1.5 font-mono text-[11px] text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100">
-                        BCA | 1234567890 | 129123
-                      </p>
-                      <p className="mt-1.5 text-[11px] text-slate-500 dark:text-zinc-400">
-                        Data Nama Bank, Nomor Rekening, dan Nominal langsung tampil otomatis di layar pembeli.
-                        Setelah pembeli transfer dan Anda cek mutasi, balas <strong>LUNAS</strong> untuk membuka
-                        link unduhan produk.
-                      </p>
+                return (
+                  <div key={method.id} className="space-y-3 py-4 first:pt-4 last:pb-0">
+                    <div className="flex items-center justify-between gap-3">
+                      <label className="flex cursor-pointer items-center gap-2.5">
+                        <input
+                          type="checkbox"
+                          checked={method.enabled}
+                          onChange={(e) => updateMethod(method.id, { enabled: e.target.checked })}
+                          className="h-4 w-4 rounded border-slate-300"
+                        />
+                        <span className="text-sm font-semibold text-slate-900 dark:text-zinc-100">
+                          {method.label}
+                        </span>
+                      </label>
+                      <div className="flex items-center gap-2">
+                        {isBankValid && (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400">
+                            <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                            <span>Format Valid</span>
+                          </span>
+                        )}
+                        {hasError && (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-red-600 dark:text-red-400">
+                            <AlertCircle className="h-3.5 w-3.5" aria-hidden="true" />
+                            <span>Perlu Diperbaiki</span>
+                          </span>
+                        )}
+                        <span className="font-mono text-[11px] text-slate-500 dark:text-zinc-400">
+                          {method.enabled ? 'Aktif' : 'Nonaktif'}
+                        </span>
+                      </div>
                     </div>
-                  )}
 
-                  {method.enabled && method.id !== 'telegram_bank' && (
-                    <div className="grid gap-3 pl-6 sm:grid-cols-2">
-                      {method.id === 'bank_transfer' && (
-                        <div className="sm:col-span-2">
-                          <label className="block text-[11px] font-medium text-slate-500 dark:text-zinc-400">
-                            Nama Bank (Contoh: Transfer Bank BRI / BCA / SeaBank)
+                    {method.enabled && method.id === 'telegram_bank' && (
+                      <div className="ml-6 rounded-lg border border-blue-200 bg-blue-50/60 p-3 text-xs leading-relaxed text-slate-700 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-zinc-300">
+                        <p className="font-semibold text-slate-900 dark:text-zinc-100">
+                          Cara membalas pesanan di Telegram:
+                        </p>
+                        <p className="mt-1">
+                          Saat pembeli checkout, bot mengirim pesan pesanan ke Telegram Anda. Cukup{' '}
+                          <strong>Reply (Balas)</strong> pesan tersebut dengan format:
+                        </p>
+                        <p className="mt-1.5 rounded border border-blue-200 bg-white px-2.5 py-1.5 font-mono text-[11px] text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100">
+                          BCA | 1234567890 | 129123
+                        </p>
+                        <p className="mt-1.5 text-[11px] text-slate-500 dark:text-zinc-400">
+                          Setelah pembeli transfer, Anda bisa memverifikasi lewat balas{' '}
+                          <strong>LUNAS</strong> di Telegram atau langsung dari menu{' '}
+                          <strong>Pesanan → Verifikasi &amp; Kirim Link</strong> di dasbor ini.
+                        </p>
+                      </div>
+                    )}
+
+                    {method.enabled && method.id !== 'telegram_bank' && (
+                      <div className="grid gap-3 pl-6 sm:grid-cols-2">
+                        {method.id === 'bank_transfer' && (
+                          <div className="sm:col-span-2">
+                            <label className="block text-[11px] font-medium text-slate-600 dark:text-zinc-400">
+                              Nama Bank <span className="text-red-500">*</span> (Contoh: Bank BCA / Bank BRI / SeaBank)
+                            </label>
+                            <input
+                              type="text"
+                              value={method.label}
+                              onChange={(e) => updateMethod(method.id, { label: e.target.value })}
+                              placeholder="Contoh: Bank BCA"
+                              className={`mt-1 h-8 w-full rounded-lg border bg-white px-2.5 text-xs text-slate-900 dark:bg-zinc-950 dark:text-zinc-100 ${
+                                touched && mErr?.label
+                                  ? 'border-red-500 focus:outline-none'
+                                  : 'border-slate-300 dark:border-zinc-700'
+                              }`}
+                            />
+                            {touched && mErr?.label && (
+                              <p className="mt-1 text-[11px] font-medium text-red-600 dark:text-red-400">
+                                {mErr.label}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                        <div>
+                          <label className="block text-[11px] font-medium text-slate-600 dark:text-zinc-400">
+                            {method.id === 'bank_transfer'
+                              ? 'Nomor Rekening Bank (6–25 digit angka)'
+                              : method.id === 'qris'
+                                ? 'NMID / ID Merchant QRIS'
+                                : 'Nomor VA / E-Wallet (8–25 digit angka)'}{' '}
+                            <span className="text-red-500">*</span>
                           </label>
                           <input
                             type="text"
-                            value={method.label}
-                            onChange={(e) => updateMethod(method.id, { label: e.target.value })}
-                            className="mt-1 h-8 w-full rounded-lg border border-slate-300 bg-white px-2.5 text-xs text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                            inputMode={method.id === 'qris' ? 'text' : 'numeric'}
+                            value={method.accountNumber}
+                            onChange={(e) =>
+                              updateMethod(method.id, { accountNumber: e.target.value })
+                            }
+                            placeholder={method.id === 'bank_transfer' ? 'Contoh: 7310294812' : ''}
+                            className={`mt-1 h-8 w-full rounded-lg border bg-white px-2.5 font-mono text-xs text-slate-900 dark:bg-zinc-950 dark:text-zinc-100 ${
+                              touched && mErr?.accountNumber
+                                ? 'border-red-500 focus:outline-none'
+                                : 'border-slate-300 dark:border-zinc-700'
+                            }`}
                           />
+                          {touched && mErr?.accountNumber && (
+                            <p className="mt-1 text-[11px] font-medium text-red-600 dark:text-red-400">
+                              {mErr.accountNumber}
+                            </p>
+                          )}
                         </div>
-                      )}
-                      <div>
-                        <label className="block text-[11px] font-medium text-slate-500 dark:text-zinc-400">
-                          {method.id === 'bank_transfer'
-                            ? 'Nomor Rekening Bank'
-                            : 'Nomor VA / Rekening / NMID'}
-                        </label>
-                        <input
-                          type="text"
-                          value={method.accountNumber}
-                          onChange={(e) =>
-                            updateMethod(method.id, { accountNumber: e.target.value })
-                          }
-                          className="mt-1 h-8 w-full rounded-lg border border-slate-300 bg-white px-2.5 font-mono text-xs text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                        />
+                        <div>
+                          <label className="block text-[11px] font-medium text-slate-600 dark:text-zinc-400">
+                            Atas Nama Penerima <span className="text-red-500">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={method.accountHolder}
+                            onChange={(e) =>
+                              updateMethod(method.id, { accountHolder: e.target.value })
+                            }
+                            placeholder="Sesuai buku tabungan"
+                            className={`mt-1 h-8 w-full rounded-lg border bg-white px-2.5 text-xs text-slate-900 dark:bg-zinc-950 dark:text-zinc-100 ${
+                              touched && mErr?.accountHolder
+                                ? 'border-red-500 focus:outline-none'
+                                : 'border-slate-300 dark:border-zinc-700'
+                            }`}
+                          />
+                          {touched && mErr?.accountHolder && (
+                            <p className="mt-1 text-[11px] font-medium text-red-600 dark:text-red-400">
+                              {mErr.accountHolder}
+                            </p>
+                          )}
+                        </div>
                       </div>
-                      <div>
-                        <label className="block text-[11px] font-medium text-slate-500 dark:text-zinc-400">
-                          Atas Nama Penerima
-                        </label>
-                        <input
-                          type="text"
-                          value={method.accountHolder}
-                          onChange={(e) =>
-                            updateMethod(method.id, { accountHolder: e.target.value })
-                          }
-                          className="mt-1 h-8 w-full rounded-lg border border-slate-300 bg-white px-2.5 text-xs text-slate-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
 

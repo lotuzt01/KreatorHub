@@ -156,10 +156,44 @@ export async function dispatchTelegramNotification(params: {
   }
 }
 
+export function buildTelegramHelpMessage(storeName: string): string {
+  return [
+    `PANDUAN PERINTAH BOT TELEGRAM (/help) — ${storeName}`,
+    '',
+    '1. KIRIM REKENING & NOMINAL KE PEMBELI (Balas / Reply pesan pesanan):',
+    '   Format singkat:',
+    '   BCA | 1234567890 | 129123',
+    '   Format + Atas Nama:',
+    '   BCA | 1234567890 | 129123 | Nama Pemilik',
+    '   Atau pisah dengan Enter (3 baris):',
+    '   BCA',
+    '   1234567890',
+    '   129123',
+    '',
+    '2. KIRIM REKENING TANPA REPLY (Pakai Nomor Invoice):',
+    '   /bayar INV-2026-1002 | BCA | 1234567890 | 129123',
+    '',
+    '3. VERIFIKASI LUNAS & BUKA LINK PRODUK:',
+    '   Balas (Reply) pesan pesanan/transfer dengan:',
+    '   LUNAS  (bisa juga: OK / ACC / KONFIRMASI)',
+    '   Atau ketik: /lunas INV-2026-1002',
+    '',
+    '4. BATALKAN PESANAN:',
+    '   Balas (Reply) pesan pesanan dengan: BATAL',
+    '   Atau ketik: /batal INV-2026-1002',
+    '',
+    '5. TAMPILKAN PANDUAN INI LAGI:',
+    '   /help atau /panduan',
+    '',
+    'Catatan Keamanan: Bot hanya menerima perintah dari TELEGRAM_CHAT_ID admin.',
+  ].join('\n');
+}
+
 export function buildOrderTelegramMessage(
   order: Order,
   settings: StoreSettings,
   stage: 'created' | 'transfer_submitted' | 'paid',
+  options?: { baseUrl?: string; extraDeliveryNote?: string },
 ): string {
   const header = settings.telegram.messageHeader || `Notifikasi ${settings.theme.storeName}`;
 
@@ -167,25 +201,32 @@ export function buildOrderTelegramMessage(
     const bankName = order.adminBankName || 'Bank';
     const bankNumber = order.adminBankNumber || '-';
     const nominal = order.adminTransferAmount ?? order.totalAmount;
-    return [
+    const lines = [
       `KONFIRMASI TRANSFER PEMBELI — ${settings.theme.storeName}`,
       `Invoice: ${order.invoiceCode}`,
       `Pembeli: ${order.customerName}`,
       `Kontak: ${order.customerPhone}`,
       `Bank Tujuan: ${bankName} (${bankNumber})`,
       `Nominal Transfer: ${formatRupiah(nominal)}`,
+    ];
+    if (order.transferProofNote) {
+      lines.push(`Catatan/Bukti Transfer: ${order.transferProofNote}`);
+    }
+    lines.push(
       '',
       'Cek mutasi rekening Anda, lalu BALAS (Reply) pesan ini dengan:',
       'LUNAS',
       `(atau kirim: /lunas ${order.invoiceCode})`,
       'Untuk membatalkan pesanan, balas: BATAL',
-    ].join('\n');
+      'Ketik /help untuk melihat semua panduan perintah.',
+    );
+    return lines.join('\n');
   }
 
   const isTelegramBank = order.paymentMethod === 'telegram_bank';
   const statusLabel =
     stage === 'paid'
-      ? 'LUNAS (File Terkirim Otomatis)'
+      ? 'LUNAS (Link Produk Terkirim Otomatis)'
       : isTelegramBank
         ? 'MENUNGGU REKENING & NOMINAL DARI ADMIN'
         : 'MENUNGGU PEMBAYARAN';
@@ -204,10 +245,28 @@ export function buildOrderTelegramMessage(
     'Rincian Produk:',
     itemLines,
     '',
-    `Estimasi Total: ${formatRupiah(order.totalAmount)}`,
+    `Total Bayar: ${formatRupiah(order.adminTransferAmount ?? order.totalAmount)}`,
   ];
 
-  if (stage === 'created' && isTelegramBank) {
+  if (stage === 'paid') {
+    const rawBase =
+      options?.baseUrl ||
+      settings.seo.canonicalUrl ||
+      process.env.APP_URL ||
+      'https://karsadigital.vercel.app';
+    const cleanBase = rawBase.replace(/\/+$/, '');
+    lines.push('', 'Tautan Unduhan Produk Digital:');
+    for (const item of order.items) {
+      const link = `${cleanBase}/api/orders/${encodeURIComponent(order.id)}/download/${encodeURIComponent(
+        item.productId,
+      )}?token=${encodeURIComponent(order.downloadToken)}`;
+      lines.push(`• ${item.title} (${item.fileName})`);
+      lines.push(`  ${link}`);
+    }
+    if (options?.extraDeliveryNote?.trim()) {
+      lines.push('', `Catatan/Link Tambahan Admin: ${options.extraDeliveryNote.trim()}`);
+    }
+  } else if (stage === 'created' && isTelegramBank) {
     lines.push(
       '',
       'BALAS (Reply) pesan ini untuk mengirim rekening & nominal ke layar pembeli:',
@@ -215,6 +274,7 @@ export function buildOrderTelegramMessage(
       `Contoh: BCA | 1234567890 | ${order.totalAmount}`,
       `(Opsional tambah nama: BCA | 1234567890 | ${order.totalAmount} | Nama Anda)`,
       `Atau ketik: /bayar ${order.invoiceCode} | BCA | 1234567890 | ${order.totalAmount}`,
+      'Ketik /help untuk panduan lengkap perintah bot.',
     );
   } else {
     lines.push(`Referensi: ${order.paymentReference}`);
@@ -346,8 +406,13 @@ function isCancelCommand(text: string, invoiceCode: string): boolean {
   return /^(?:\/(?:batal|cancel|tolak)(?:@\w+)?|batal|cancel|tolak)\b/i.test(clean);
 }
 
+function isHelpCommand(text: string): boolean {
+  return /^\/(?:help|panduan|bantuan|start)(?:@\w+)?\b/i.test(text.trim());
+}
+
 let cachedUpdates: TelegramUpdate[] = [];
 let lastPollAt = 0;
+let lastHandledHelpUpdateId = 0;
 
 async function fetchTelegramUpdatesThrottled(botToken: string): Promise<TelegramUpdate[]> {
   const now = Date.now();
@@ -413,6 +478,7 @@ export async function syncOrderFromTelegram(order: Order, settings: StoreSetting
   let bank: ParsedBankInstruction | null = null;
   let paid = false;
   let cancelled = false;
+  let newestHelpUpdateId = 0;
 
   for (const upd of updates) {
     const msg = upd.message;
@@ -420,6 +486,11 @@ export async function syncOrderFromTelegram(order: Order, settings: StoreSetting
     if (String(msg.chat.id) !== chatId) continue;
 
     const text = msg.text.trim();
+    if (isHelpCommand(text) && upd.update_id > lastHandledHelpUpdateId) {
+      newestHelpUpdateId = Math.max(newestHelpUpdateId, upd.update_id);
+      continue;
+    }
+
     const replyId = msg.reply_to_message?.message_id || 0;
     const replyText = (msg.reply_to_message?.text || '').toUpperCase();
     const textUpper = text.toUpperCase();
@@ -445,6 +516,14 @@ export async function syncOrderFromTelegram(order: Order, settings: StoreSetting
     if (parsed) {
       bank = parsed;
     }
+  }
+
+  if (newestHelpUpdateId > lastHandledHelpUpdateId) {
+    lastHandledHelpUpdateId = newestHelpUpdateId;
+    await dispatchTelegramNotification({
+      event: 'help',
+      text: buildTelegramHelpMessage(settings.theme.storeName),
+    });
   }
 
   let changed = false;
