@@ -1,0 +1,6 @@
+{
+  "name": "Karsa Digital",
+  "description": "Toko produk digital modern dengan landing page SEO, dark mode, pembayaran otomatis, manajemen stok, dasbor admin, editor tampilan visual, dan notifikasi Bot Telegram real-time.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
