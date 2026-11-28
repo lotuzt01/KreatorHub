@@ -47,16 +47,9 @@ export default function App() {
       const saved = window.localStorage.getItem('karsa_theme_mode');
       if (saved === 'dark') return true;
       if (saved === 'light') return false;
-      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+      return true;
     } catch {
-      return false;
-    }
-  });
-  const [userToggledTheme, setUserToggledTheme] = useState<boolean>(() => {
-    try {
-      return Boolean(window.localStorage.getItem('karsa_theme_mode'));
-    } catch {
-      return false;
+      return true;
     }
   });
 
@@ -126,10 +119,6 @@ export default function App() {
         setStorefront(payload);
         setStoreError(null);
         setLoading(false);
-
-        if (!userToggledTheme) {
-          setIsDark(payload.settings.theme.defaultMode === 'dark');
-        }
       },
       (err) => {
         setStoreError(err.message);
@@ -139,7 +128,7 @@ export default function App() {
     );
 
     return () => unsubscribe();
-  }, [userToggledTheme, serverlessHealth?.bankConfig]);
+  }, [serverlessHealth?.bankConfig]);
 
   // Listen for #admin hash navigation so owner can bookmark /#admin directly
   useEffect(() => {
@@ -238,7 +227,6 @@ export default function App() {
   }, [storefront]);
 
   const handleToggleTheme = () => {
-    setUserToggledTheme(true);
     setIsDark((prev) => {
       const next = !prev;
       try {
@@ -320,7 +308,7 @@ export default function App() {
 
   // Storefront Landing Page Route
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-zinc-950 dark:text-zinc-100">
+    <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-[#07070f] dark:text-slate-100">
       <StorefrontHeader
         storeName={storefront?.settings.theme.storeName || 'Karsa Digital'}
         uiTexts={storefront?.settings.theme.uiTexts}
@@ -332,26 +320,24 @@ export default function App() {
 
       {storeError ? (
         <div className="mx-auto max-w-xl px-4 py-20 text-center">
-          <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-sm text-red-800 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200">
+          <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-sm text-red-800 dark:border-red-500/30 dark:bg-red-950/40 dark:text-red-200">
             <p className="font-semibold">Gagal terhubung ke database real-time.</p>
             <p className="mt-1 text-xs opacity-90">{storeError}</p>
           </div>
         </div>
       ) : loading || !storefront ? (
-        <div className="mx-auto max-w-[1200px] space-y-10 px-4 py-16 sm:px-6 lg:px-8">
-          <div className="grid gap-8 lg:grid-cols-12">
-            <div className="space-y-4 lg:col-span-6">
-              <div className="h-4 w-44 animate-pulse rounded bg-slate-200 dark:bg-zinc-800" />
-              <div className="h-14 w-full animate-pulse rounded bg-slate-200 dark:bg-zinc-800" />
-              <div className="h-20 w-5/6 animate-pulse rounded bg-slate-200 dark:bg-zinc-800" />
-            </div>
-            <div className="aspect-16/10 animate-pulse rounded-xl bg-slate-200 lg:col-span-6 dark:bg-zinc-800" />
+        <div className="mx-auto max-w-[1040px] space-y-10 px-4 py-16 sm:px-6">
+          <div className="mx-auto max-w-[680px] space-y-4 text-center">
+            <div className="mx-auto h-4 w-44 animate-pulse rounded bg-slate-200 dark:bg-white/10" />
+            <div className="h-12 w-full animate-pulse rounded-xl bg-slate-200 dark:bg-white/10" />
+            <div className="mx-auto h-16 w-5/6 animate-pulse rounded-xl bg-slate-200 dark:bg-white/10" />
           </div>
-          <div className="grid gap-8 md:grid-cols-3">
+          <div className="mx-auto aspect-video max-w-[680px] animate-pulse rounded-3xl bg-slate-200 dark:bg-white/5" />
+          <div className="grid gap-6 md:grid-cols-3">
             {[1, 2, 3].map((idx) => (
               <div
                 key={idx}
-                className="h-80 animate-pulse rounded-xl border border-slate-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
+                className="h-72 animate-pulse rounded-2xl border border-slate-200 bg-white dark:border-white/10 dark:bg-white/[0.03]"
               />
             ))}
           </div>
@@ -360,10 +346,14 @@ export default function App() {
         <>
           <StorefrontView
             data={storefront}
+            cart={cart}
+            cartCount={cartCount}
             isDark={isDark}
             onToggleTheme={handleToggleTheme}
             onAddToCart={handleAddToCart}
             onSelectProduct={(p) => setSelectedProduct(p)}
+            onOpenCart={() => setCartOpen(true)}
+            onQuickBuy={handleBuyNow}
             onOpenAdmin={() => setRoute('admin')}
           />
 

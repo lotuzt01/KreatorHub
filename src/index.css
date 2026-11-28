@@ -8,14 +8,14 @@
 }
 
 :root {
-  --store-accent: #1d4ed8;
-  --store-accent-hover: #1e40af;
-  --store-accent-soft: rgba(29, 78, 216, 0.08);
-  --store-radius: 12px;
+  --store-accent: #ec4899;
+  --store-accent-hover: #db2777;
+  --store-accent-soft: rgba(236, 72, 153, 0.1);
+  --store-radius: 14px;
 }
 
 .dark {
-  --store-accent-soft: rgba(59, 130, 246, 0.14);
+  --store-accent-soft: rgba(34, 211, 238, 0.14);
 }
 
 html {
@@ -29,6 +29,54 @@ h1, h2, h3, h4, .font-display {
 .dark body,
 .dark {
   letter-spacing: 0.01em;
+}
+
+/* Deep cosmic landing page canvas inspired by Lynk.id dark funnel */
+.lp-canvas-dark {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(124, 58, 237, 0.28) 0%, rgba(14, 16, 38, 0) 48%),
+    radial-gradient(circle at 85% 32%, rgba(6, 182, 212, 0.16) 0%, rgba(14, 16, 38, 0) 40%),
+    radial-gradient(circle at 15% 65%, rgba(236, 72, 153, 0.16) 0%, rgba(14, 16, 38, 0) 45%),
+    linear-gradient(180deg, #130c2e 0%, #0b0d21 35%, #110b29 70%, #090a1a 100%);
+}
+
+.lp-canvas-light {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(139, 92, 246, 0.12) 0%, rgba(248, 250, 252, 0) 46%),
+    radial-gradient(circle at 85% 30%, rgba(6, 182, 212, 0.09) 0%, rgba(248, 250, 252, 0) 40%),
+    linear-gradient(180deg, #f8fafc 0%, #f1f5f9 50%, #f8fafc 100%);
+}
+
+.video-frame-glow {
+  position: relative;
+  border-radius: 1.15rem;
+  padding: 2px;
+  background: linear-gradient(
+    135deg,
+    rgba(34, 211, 238, 0.78),
+    rgba(168, 85, 247, 0.68),
+    rgba(249, 115, 22, 0.78)
+  );
+  box-shadow: 0 14px 34px -12px rgba(0, 0, 0, 0.75);
+}
+
+.cta-gradient-btn {
+  background: linear-gradient(90deg, #ec4899 0%, #f97316 100%);
+  box-shadow: 0 8px 26px rgba(236, 72, 153, 0.36);
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.18s ease, opacity 0.18s ease;
+}
+
+.cta-gradient-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 30px rgba(249, 115, 22, 0.45);
+}
+
+.cta-gradient-btn:active {
+  transform: scale(0.98);
+}
+
+.shadow-glow-cyan {
+  box-shadow: 0 0 26px rgba(34, 211, 238, 0.3);
 }
 
 @media (prefers-reduced-motion: reduce) {

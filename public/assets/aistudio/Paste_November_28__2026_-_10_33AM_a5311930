@@ -1,0 +1,810 @@
+```html
+<!DOCTYPE html>
+<html lang="id" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Landing Page Produk Digital</title>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Google Fonts: Plus Jakarta Sans & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@700;800;900&display=swap" rel="stylesheet" />
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            display: ['Plus Jakarta Sans', 'sans-serif'],
+          },
+          colors: {
+            obsidian: '#090914',
+            navyDeep: '#0e1026',
+            purpleDeep: '#1d103b',
+          },
+          boxShadow: {
+            glowCyan: '0 0 28px rgba(34, 211, 238, 0.35)',
+            glowPink: '0 0 32px rgba(236, 72, 153, 0.42)',
+            glowOrange: '0 0 28px rgba(249, 115, 22, 0.4)',
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    /* Custom styling for deep dark gradient canvas & subtle glow animations */
+    body {
+      background-color: #07070f;
+      color: #f8fafc;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .lp-canvas {
+      background:
+        radial-gradient(circle at 50% 0%, rgba(124, 58, 237, 0.28) 0%, rgba(14, 16, 38, 0) 48%),
+        radial-gradient(circle at 85% 32%, rgba(6, 182, 212, 0.16) 0%, rgba(14, 16, 38, 0) 40%),
+        radial-gradient(circle at 15% 65%, rgba(236, 72, 153, 0.16) 0%, rgba(14, 16, 38, 0) 45%),
+        linear-gradient(180deg, #130c2e 0%, #0b0d21 35%, #110b29 70%, #090a1a 100%);
+    }
+
+    .video-frame-glow {
+      position: relative;
+      border-radius: 1.15rem;
+      padding: 2px;
+      background: linear-gradient(135deg, rgba(34, 211, 238, 0.75), rgba(168, 85, 247, 0.65), rgba(249, 115, 22, 0.75));
+      box-shadow: 0 12px 30px -10px rgba(0, 0, 0, 0.8);
+    }
+
+    .cta-gradient-btn {
+      background: linear-gradient(90deg, #ec4899 0%, #f97316 100%);
+      transition: transform 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    .cta-gradient-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 28px rgba(249, 115, 22, 0.45);
+    }
+
+    .cta-gradient-btn:active {
+      transform: scale(0.98);
+    }
+
+    /* Hide scrollbar cleanly inside editor modal */
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-start antialiased selection:bg-pink-500 selection:text-white">
+
+  <!-- =====================================================================
+       KONFIGURASI UTAMA PRODUK (EDIT BAGIAN INI UNTUK KUSTOMISASI MUDAH)
+       Semua teks, harga, ID video YouTube, dan link checkout diatur di sini.
+  ====================================================================== -->
+  <script>
+    const PRODUCT_CONFIG = {
+      // 1. Identitas & Judul Hero
+      badgeTop: "✨ AI ANIMATION & CONTENT CREATOR",
+      titleLine1: "STUDIO ANIMASI",
+      titleLine2: "PRO V.5.0",
+      subtitle: "Bikin konten animasi, cerita edukasi, fakta unik, health talking, dan video promosi produk dengan bantuan AI secara cepat & praktis.",
+      pillBadge: "⚡ UNLIMITED GENERATE • LIFETIME ACCESS",
+      heroCtaText: "🚀 AKSES STUDIO ANIMASI PRO",
+      heroMicroCopy: "🎨 Mulai bikin konten animasi viral kamu sekarang",
+
+      // 2. Harga & Link Tujuan (Lynk.id / WhatsApp / Payment Gateway)
+      originalPrice: 250000,
+      discountPrice: 99999,
+      currency: "IDR",
+      checkoutUrl: "https://lynk.id/username-kamu/kode-produk", // Ganti dengan link produk Lynk.id Anda
+      whatsappNumber: "6281234567890", // Format internasional tanpa tanda + (untuk konfirmasi order)
+
+      // 3. Bagian Video Showcase Atas ("LIHAT HASILNYA")
+      showcaseHeading: "🎬 LIHAT HASILNYA",
+      showcaseSubheading: "Contoh hasil konten animasi yang bisa langsung kamu buat:",
+      topVideos: [
+        {
+          label: "Fakta Menarik & Edukasi Visual",
+          youtubeId: "aqz-KE-bpKQ" // Ganti dengan ID video YouTube Anda (bagian setelah v= atau youtu.be/)
+        },
+        {
+          label: "Animasi Cerita & Storytelling",
+          youtubeId: "LXb3EKWsInQ"
+        }
+      ],
+
+      // 4. Bagian Masalah (Pain Points)
+      painHeading: "😵 MASIH RIBET BIKIN KONTEN?",
+      painPoints: [
+        { icon: "💡", text: "Bingung mencari ide konten setiap hari" },
+        { icon: "⏱️", text: "Proses editing manual memakan waktu berjam-jam" },
+        { icon: "📅", text: "Sulit konsisten upload karena kehabisan tenaga" },
+        { icon: "📉", text: "Views dan engagement akun sulit berkembang" },
+        { icon: "🧠", text: "Bingung merangkai prompt AI agar hasilnya konsisten" }
+      ],
+
+      // 5. Bagian Solusi & Fitur Utama
+      solutionEyebrow: "✨ SOLUSI CONTENT CREATOR",
+      solutionTitlePart1: "DARI IDE MENJADI",
+      solutionTitlePart2: "KONTEN ANIMASI",
+      solutionDesc: "Membantu mempercepat proses pembuatan berbagai jenis konten animasi & afiliasi dengan alur kerja (workflow) siap pakai.",
+      featuresHeading: "🌈 FITUR UTAMA",
+      featuresSubheading: "Tools lengkap untuk mempercepat produksi konten harianmu:",
+      features: [
+        {
+          icon: "🎬",
+          title: "Auto Generate Script Animasi",
+          desc: "Membantu menyusun konsep, hook, dan naskah adegan per adegan dalam hitungan detik.",
+          cardStyle: "from-blue-950/80 to-indigo-950/80 border-blue-500/30"
+        },
+        {
+          icon: "🧠",
+          title: "Berbagai Niche & Gaya Konten",
+          desc: "Fakta unik, animasi petualangan, cerita anak, edukasi kesehatan, hingga objek berbicara.",
+          cardStyle: "from-purple-950/80 to-fuchsia-950/80 border-purple-500/30"
+        },
+        {
+          icon: "🎙️",
+          title: "Voice Over AI Natural",
+          desc: "Bikin narasi video terasa lebih hidup dengan suara jernih tanpa perlu rekaman manual.",
+          cardStyle: "from-amber-950/60 to-stone-900/90 border-amber-500/30"
+        },
+        {
+          icon: "🖼️",
+          title: "Prompt Visual Siap Pakai",
+          desc: "Tidak perlu mulai dari layar kosong—tinggal pilih template prompt dan sesuaikan karakter.",
+          cardStyle: "from-cyan-950/75 to-slate-900/90 border-cyan-500/30"
+        },
+        {
+          icon: "⚡",
+          title: "Workflow Cepat & Praktis",
+          desc: "Pangkas waktu produksi hingga 80% sehingga bisa fokus memperbanyak kuantitas upload.",
+          cardStyle: "from-violet-950/80 to-indigo-950/80 border-violet-500/30"
+        }
+      ],
+
+      // 6. Bagian Video Contoh Hasil Generate Bawah
+      bottomGalleryHeading: "🎞️ CONTOH HASIL GENERATE",
+      bottomVideos: [
+        {
+          badge: "✨ FAKTA UNIK & EDUKASI",
+          youtubeId: "jNQXAC9IVRw"
+        },
+        {
+          badge: "🌿 ANIMASI CERITA & LOKAL",
+          youtubeId: "ScMzIvxBSi4"
+        },
+        {
+          badge: "🩺 HEALTH TALKING & TIPS",
+          youtubeId: "ysz5S6PUM-U"
+        }
+      ],
+
+      // 7. Penutup (Closing CTA) & Bar Bawah
+      closingEyebrow: "✨ READY TO CREATE?",
+      closingTitleLine1: "SAATNYA BIKIN KONTEN",
+      closingTitleLine2: "LEBIH SERU.",
+      closingDesc: "Mulai eksplorasi pembuatan konten animasi profesional sekarang juga sebelum harga promo berakhir.",
+      closingCtaText: "🚀 AKSES SEKARANG JUGA",
+      stickyBuyText: "BUY NOW"
+    };
+  </script>
+
+  <!-- Floating Quick-Edit Creator Button (Dapat disembunyikan jika sudah siap publish) -->
+  <button
+    id="toggleEditorBtn"
+    type="button"
+    onclick="openQuickEditor()"
+    title="Edit Teks, Harga & Link Produk"
+    class="fixed top-3 right-3 z-40 flex items-center gap-1.5 rounded-full bg-slate-900/90 hover:bg-slate-800 text-cyan-300 border border-cyan-400/40 px-3 py-1.5 text-xs font-semibold shadow-lg backdrop-blur-md transition"
+  >
+    <span>⚙️</span>
+    <span>Edit Halaman</span>
+  </button>
+
+  <!-- =====================================================================
+       MOBILE-FIRST LANDING PAGE CONTAINER (MAX WIDTH 480PX SEPERTI LYNK.ID)
+  ====================================================================== -->
+  <main id="landingPageRoot" class="lp-canvas w-full max-w-[480px] min-h-screen shadow-2xl border-x border-white/10 pb-28 relative overflow-hidden">
+
+    <!-- 1. HERO SECTION -->
+    <section class="px-5 pt-11 pb-8 text-center relative">
+      <!-- Ambient Top Glow -->
+      <div class="pointer-events-none absolute -top-16 left-1/2 -translate-x-1/2 w-72 h-72 rounded-full bg-fuchsia-600/20 blur-3xl"></div>
+
+      <div class="inline-flex items-center justify-center rounded-full border border-purple-400/35 bg-purple-950/60 px-4 py-1.5 mb-5 backdrop-blur-sm">
+        <span id="el-badgeTop" class="text-[11px] font-bold tracking-wider uppercase text-purple-200"></span>
+      </div>
+
+      <h1 class="font-display font-black tracking-tight leading-[1.08] text-3xl sm:text-4xl mb-4">
+        <span id="el-titleLine1" class="block text-white drop-shadow"></span>
+        <span id="el-titleLine2" class="block bg-gradient-to-r from-cyan-400 via-sky-400 to-fuchsia-400 bg-clip-text text-transparent"></span>
+      </h1>
+
+      <p id="el-subtitle" class="text-slate-300 text-sm leading-relaxed max-w-sm mx-auto mb-6"></p>
+
+      <!-- Pill Highlight -->
+      <div class="mb-4">
+        <span id="el-pillBadge" class="inline-block rounded-full bg-gradient-to-r from-cyan-500 to-indigo-600 px-5 py-2 text-[11px] font-extrabold tracking-wide text-white shadow-glowCyan"></span>
+      </div>
+
+      <!-- Primary Hero CTA Button -->
+      <button
+        type="button"
+        onclick="openCheckoutModal()"
+        class="cta-gradient-btn w-full max-w-xs mx-auto rounded-full py-3.5 px-6 font-display font-extrabold text-sm tracking-wide text-white shadow-glowPink flex items-center justify-center gap-2 cursor-pointer"
+      >
+        <span id="el-heroCtaText"></span>
+      </button>
+
+      <p id="el-heroMicroCopy" class="text-[11px] text-slate-400 mt-3"></p>
+    </section>
+
+    <!-- 2. LIHAT HASILNYA (TOP VIDEO SHOWCASE) -->
+    <section class="px-5 py-6">
+      <div class="text-center mb-5">
+        <h2 id="el-showcaseHeading" class="font-display font-extrabold text-xl tracking-tight text-white"></h2>
+        <p id="el-showcaseSubheading" class="text-xs text-slate-400 mt-1"></p>
+      </div>
+
+      <div id="el-topVideosContainer" class="space-y-4">
+        <!-- Video cards injected by JS -->
+      </div>
+    </section>
+
+    <!-- 3. PAIN POINTS CARD ("MASIH RIBET BIKIN KONTEN?") -->
+    <section class="px-5 py-5">
+      <div class="rounded-2xl bg-gradient-to-b from-fuchsia-950/45 to-slate-950/75 border border-pink-500/25 p-5 shadow-xl backdrop-blur-sm">
+        <h2 id="el-painHeading" class="font-display font-extrabold text-lg text-pink-400 leading-snug mb-4"></h2>
+        <ul id="el-painList" class="divide-y divide-white/10 text-sm text-slate-200">
+          <!-- Pain items injected by JS -->
+        </ul>
+      </div>
+    </section>
+
+    <!-- 4. SOLUTION BRIDGE & FITUR UTAMA -->
+    <section class="px-5 py-7">
+      <div class="text-center mb-7">
+        <p id="el-solutionEyebrow" class="text-[11px] font-bold uppercase tracking-widest text-cyan-400 mb-2"></p>
+        <h2 class="font-display font-black text-2xl sm:text-[26px] leading-tight">
+          <span id="el-solutionTitlePart1" class="text-fuchsia-400"></span>
+          <span class="text-white"> MENJADI</span><br />
+          <span id="el-solutionTitlePart2" class="text-cyan-400"></span>
+        </h2>
+        <p id="el-solutionDesc" class="text-xs sm:text-sm text-slate-300 leading-relaxed mt-3 max-w-sm mx-auto"></p>
+      </div>
+
+      <div class="text-center mb-4">
+        <h3 id="el-featuresHeading" class="font-display font-extrabold text-xl text-white"></h3>
+        <p id="el-featuresSubheading" class="text-xs text-slate-400 mt-1"></p>
+      </div>
+
+      <div id="el-featuresList" class="space-y-3">
+        <!-- Feature cards injected by JS -->
+      </div>
+    </section>
+
+    <!-- 5. CONTOH HASIL GENERATE (BOTTOM VIDEO GALLERY) -->
+    <section class="px-5 py-6">
+      <div class="text-center mb-5">
+        <h2 id="el-bottomGalleryHeading" class="font-display font-extrabold text-xl tracking-tight text-cyan-300"></h2>
+      </div>
+
+      <div id="el-bottomVideosContainer" class="space-y-5">
+        <!-- Bottom video showcase injected by JS -->
+      </div>
+    </section>
+
+    <!-- 6. CLOSING CTA SECTION -->
+    <section class="px-5 pt-8 pb-6 text-center relative">
+      <div class="rounded-3xl bg-gradient-to-b from-purple-900/40 via-indigo-950/60 to-slate-950/90 border border-purple-400/25 p-6 shadow-2xl">
+        <p id="el-closingEyebrow" class="text-[11px] font-bold tracking-widest uppercase text-amber-300 mb-2"></p>
+        <h2 class="font-display font-black text-2xl leading-tight mb-3">
+          <span id="el-closingTitleLine1" class="block text-white"></span>
+          <span id="el-closingTitleLine2" class="block text-cyan-400"></span>
+        </h2>
+        <p id="el-closingDesc" class="text-xs sm:text-sm text-slate-300 leading-relaxed mb-5"></p>
+
+        <!-- Price Display Box -->
+        <div class="rounded-2xl bg-black/40 border border-white/10 py-3 px-4 mb-5">
+          <p class="text-[11px] uppercase tracking-wider text-slate-400">Harga Promo Hari Ini</p>
+          <div class="flex items-center justify-center gap-2.5 mt-0.5">
+            <span id="el-originalPrice" class="text-sm text-slate-400 line-through"></span>
+            <span id="el-discountPrice" class="font-display font-black text-2xl text-emerald-400"></span>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onclick="openCheckoutModal()"
+          class="cta-gradient-btn w-full rounded-full py-3.5 px-6 font-display font-extrabold text-sm tracking-wide text-white shadow-glowPink cursor-pointer"
+        >
+          <span id="el-closingCtaText"></span>
+        </button>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- =====================================================================
+       STICKY BOTTOM BAR (IDENTIK DENGAN TOMBOL KERANJANG & BUY NOW LYNK.ID)
+  ====================================================================== -->
+  <div class="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[480px] z-30 bg-white/95 backdrop-blur-md border-t border-slate-200 px-3 py-2.5 shadow-[0_-8px_25px_rgba(0,0,0,0.35)]">
+    <div class="flex items-center gap-2.5">
+      <!-- Add to Cart Icon Button -->
+      <button
+        type="button"
+        onclick="addToCartFeedback()"
+        aria-label="Tambah ke Keranjang"
+        class="relative flex items-center justify-center w-12 h-11 rounded-xl border border-emerald-500/40 bg-emerald-50 hover:bg-emerald-100 text-emerald-600 transition active:scale-95 cursor-pointer shrink-0"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+        </svg>
+        <span id="cartBadge" class="hidden absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-emerald-600 text-white text-[10px] font-bold flex items-center justify-center">1</span>
+      </button>
+
+      <!-- Red BUY NOW Button -->
+      <button
+        type="button"
+        onclick="openCheckoutModal()"
+        class="flex-1 h-11 rounded-xl bg-[#b91c1c] hover:bg-[#991b1b] active:scale-[0.99] text-white font-display font-extrabold text-sm tracking-wider uppercase shadow-md transition flex items-center justify-center gap-2 cursor-pointer"
+      >
+        <span id="el-stickyBuyText">BUY NOW</span>
+        <span id="el-stickyPriceTag" class="text-xs font-semibold bg-black/25 px-2 py-0.5 rounded-md"></span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Toast Notification (Pengganti alert()) -->
+  <div id="toastBox" class="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 pointer-events-none opacity-0 transition-opacity duration-200">
+    <div id="toastMessage" class="rounded-full bg-slate-900 text-white border border-emerald-400/50 px-4 py-2 text-xs font-semibold shadow-xl whitespace-nowrap"></div>
+  </div>
+
+  <!-- =====================================================================
+       INTERACTIVE CHECKOUT / ORDER MODAL
+  ====================================================================== -->
+  <div id="checkoutModal" class="fixed inset-0 z-50 hidden items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm p-0 sm:p-4">
+    <div class="w-full max-w-[460px] rounded-t-3xl sm:rounded-3xl bg-slate-900 border border-white/15 text-slate-100 p-5 sm:p-6 shadow-2xl animate-fadeIn">
+      <div class="flex items-center justify-between pb-3 border-b border-white/10">
+        <div>
+          <span class="text-[10px] font-bold uppercase tracking-wider text-emerald-400">Checkout Instan</span>
+          <h3 id="modalProductTitle" class="font-display font-extrabold text-base text-white"></h3>
+        </div>
+        <button type="button" onclick="closeCheckoutModal()" class="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-slate-300 cursor-pointer">✕</button>
+      </div>
+
+      <!-- Ringkasan Harga -->
+      <div class="mt-4 rounded-2xl bg-slate-950/80 border border-white/10 p-3.5 flex items-center justify-between">
+        <div>
+          <p class="text-xs text-slate-400">Total Pembayaran</p>
+          <p id="modalOriginalPrice" class="text-xs text-slate-500 line-through"></p>
+        </div>
+        <div class="text-right">
+          <span id="modalDiscountPrice" class="font-display font-black text-xl text-emerald-400"></span>
+          <span class="block text-[10px] text-cyan-300">Akses Otomatis Terkirim</span>
+        </div>
+      </div>
+
+      <!-- Form Data Pembeli -->
+      <form id="orderForm" onsubmit="handleOrderSubmit(event)" class="mt-4 space-y-3">
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Nama Lengkap *</label>
+          <input
+            type="text"
+            id="buyerName"
+            required
+            placeholder="Contoh: Budi Santoso"
+            class="w-full rounded-xl bg-slate-800/90 border border-white/15 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400"
+          />
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Nomor WhatsApp Aktif *</label>
+          <input
+            type="tel"
+            id="buyerWhatsapp"
+            required
+            placeholder="Contoh: 081234567890"
+            class="w-full rounded-xl bg-slate-800/90 border border-white/15 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400"
+          />
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Alamat Email (Untuk Pengiriman Akses) *</label>
+          <input
+            type="email"
+            id="buyerEmail"
+            required
+            placeholder="nama@email.com"
+            class="w-full rounded-xl bg-slate-800/90 border border-white/15 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400"
+          />
+        </div>
+
+        <div class="pt-2 space-y-2.5">
+          <!-- Tombol Lanjut ke Lynk.id / Payment Gateway -->
+          <button
+            type="submit"
+            class="w-full rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 py-3 px-4 font-display font-extrabold text-sm text-white shadow-lg transition cursor-pointer"
+          >
+            Lanjutkan Pembayaran →
+          </button>
+
+          <!-- Alternatif Order via WhatsApp -->
+          <button
+            type="button"
+            onclick="orderViaWhatsApp()"
+            class="w-full rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 py-2.5 px-4 text-xs font-semibold text-slate-200 transition cursor-pointer"
+          >
+            💬 Pesan / Tanya Admin via WhatsApp
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- =====================================================================
+       QUICK-EDIT DRAWER MODAL (UNTUK KUSTOMISASI & EXPORT HTML SIAP DEPLOY)
+  ====================================================================== -->
+  <div id="quickEditorModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/80 backdrop-blur-sm p-3">
+    <div class="w-full max-w-lg max-h-[90vh] flex flex-col rounded-3xl bg-slate-900 border border-cyan-400/30 text-slate-100 shadow-2xl overflow-hidden">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-white/10 bg-slate-950/60">
+        <div>
+          <h3 class="font-display font-extrabold text-base text-cyan-300">⚙️ Quick-Edit Landing Page</h3>
+          <p class="text-[11px] text-slate-400">Ubah konten langsung & salin kode HTML siap upload ke GitHub Pages</p>
+        </div>
+        <button type="button" onclick="closeQuickEditor()" class="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-slate-300 cursor-pointer">✕</button>
+      </div>
+
+      <div class="p-5 overflow-y-auto space-y-4 text-xs">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-slate-400 mb-1">Judul Baris 1</label>
+            <input id="ed-title1" type="text" class="w-full rounded-lg bg-slate-800 border border-white/15 px-3 py-2 text-white" />
+          </div>
+          <div>
+            <label class="block text-slate-400 mb-1">Judul Baris 2 (Highlight)</label>
+            <input id="ed-title2" type="text" class="w-full rounded-lg bg-slate-800 border border-white/15 px-3 py-2 text-white" />
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-slate-400 mb-1">Subjudul Hero</label>
+          <textarea id="ed-subtitle" rows="2" class="w-full rounded-lg bg-slate-800 border border-white/15 px-3 py-2 text-white"></textarea>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-slate-400 mb-1">Harga Coret (IDR)</label>
+            <input id="ed-origPrice" type="number" class="w-full rounded-lg bg-slate-800 border border-white/15 px-3 py-2 text-white" />
+          </div>
+          <div>
+            <label class="block text-slate-400 mb-1">Harga Promo (IDR)</label>
+            <input id="ed-discPrice" type="number" class="w-full rounded-lg bg-slate-800 border border-white/15 px-3 py-2 text-white" />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="block text-slate-400 mb-1">Link Checkout (Lynk.id / Payment)</label>
+            <input id="ed-checkoutUrl" type="url" class="w-full rounded-lg bg-slate-800 border border-white/15 px-3 py-2 text-white" />
+          </div>
+          <div>
+            <label class="block text-slate-400 mb-1">Nomor WhatsApp (628...)</label>
+            <input id="ed-wa" type="text" class="w-full rounded-lg bg-slate-800 border border-white/15 px-3 py-2 text-white" />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-slate-400 mb-1">ID Video YouTube #1</label>
+            <input id="ed-yt1" type="text" placeholder="Contoh: aqz-KE-bpKQ" class="w-full rounded-lg bg-slate-800 border border-white/15 px-3 py-2 text-white" />
+          </div>
+          <div>
+            <label class="block text-slate-400 mb-1">ID Video YouTube #2</label>
+            <input id="ed-yt2" type="text" placeholder="Contoh: LXb3EKWsInQ" class="w-full rounded-lg bg-slate-800 border border-white/15 px-3 py-2 text-white" />
+          </div>
+        </div>
+      </div>
+
+      <div class="px-5 py-3.5 border-t border-white/10 bg-slate-950/70 flex flex-wrap items-center justify-between gap-2">
+        <button
+          type="button"
+          onclick="applyQuickEditor()"
+          class="rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-4 py-2 text-xs cursor-pointer"
+        >
+          Terapkan Perubahan
+        </button>
+
+        <button
+          type="button"
+          onclick="copyFinalHtml()"
+          class="rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-4 py-2 text-xs cursor-pointer"
+        >
+          📋 Salin Kode HTML Final
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =====================================================================
+       JAVASCRIPT RENDERER & INTERACTIVITY
+  ====================================================================== -->
+  <script>
+    // Format angka ke mata uang Rupiah
+    function formatRupiah(amount) {
+      return new Intl.NumberFormat('id-ID', {
+        style: 'currency',
+        currency: 'IDR',
+        maximumFractionDigits: 0
+      }).format(amount);
+    }
+
+    // Ekstrak ID YouTube jika user memasukkan URL penuh maupun ID saja
+    function parseYouTubeId(input) {
+      if (!input) return '';
+      const trimmed = input.trim();
+      const regExp = /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
+      const match = trimmed.match(regExp);
+      return match ? match[1] : trimmed;
+    }
+
+    // Render seluruh halaman berdasarkan PRODUCT_CONFIG
+    function renderLandingPage() {
+      const cfg = PRODUCT_CONFIG;
+      document.title = `${cfg.titleLine1} ${cfg.titleLine2}`;
+
+      // Hero
+      document.getElementById('el-badgeTop').textContent = cfg.badgeTop;
+      document.getElementById('el-titleLine1').textContent = cfg.titleLine1;
+      document.getElementById('el-titleLine2').textContent = cfg.titleLine2;
+      document.getElementById('el-subtitle').textContent = cfg.subtitle;
+      document.getElementById('el-pillBadge').textContent = cfg.pillBadge;
+      document.getElementById('el-heroCtaText').textContent = cfg.heroCtaText;
+      document.getElementById('el-heroMicroCopy').textContent = cfg.heroMicroCopy;
+
+      // Top Video Showcase
+      document.getElementById('el-showcaseHeading').textContent = cfg.showcaseHeading;
+      document.getElementById('el-showcaseSubheading').textContent = cfg.showcaseSubheading;
+      const topVideosEl = document.getElementById('el-topVideosContainer');
+      topVideosEl.innerHTML = cfg.topVideos.map(v => {
+        const vidId = parseYouTubeId(v.youtubeId);
+        return `
+          <div class="video-frame-glow">
+            <div class="rounded-[1rem] bg-slate-950 overflow-hidden">
+              <div class="aspect-video w-full bg-black">
+                <iframe
+                  class="w-full h-full"
+                  src="https://www.youtube.com/embed/${vidId}?rel=0"
+                  title="${v.label}"
+                  loading="lazy"
+                  frameborder="0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowfullscreen
+                ></iframe>
+              </div>
+              <div class="px-3.5 py-2 bg-slate-900/95 flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-200 truncate">${v.label}</span>
+                <span class="text-[10px] font-bold text-cyan-400 shrink-0">▶ Contoh Video</span>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      // Pain Points
+      document.getElementById('el-painHeading').textContent = cfg.painHeading;
+      document.getElementById('el-painList').innerHTML = cfg.painPoints.map(item => `
+        <li class="py-2.5 flex items-start gap-3">
+          <span class="text-base leading-none mt-0.5">${item.icon}</span>
+          <span class="text-xs sm:text-sm text-slate-200 leading-snug">${item.text}</span>
+        </li>
+      `).join('');
+
+      // Solution & Features
+      document.getElementById('el-solutionEyebrow').textContent = cfg.solutionEyebrow;
+      document.getElementById('el-solutionTitlePart1').textContent = cfg.solutionTitlePart1;
+      document.getElementById('el-solutionTitlePart2').textContent = cfg.solutionTitlePart2;
+      document.getElementById('el-solutionDesc').textContent = cfg.solutionDesc;
+
+      document.getElementById('el-featuresHeading').textContent = cfg.featuresHeading;
+      document.getElementById('el-featuresSubheading').textContent = cfg.featuresSubheading;
+      document.getElementById('el-featuresList').innerHTML = cfg.features.map(f => `
+        <div class="rounded-2xl bg-gradient-to-br ${f.cardStyle} border p-4 shadow-lg backdrop-blur-sm">
+          <div class="text-xl mb-1.5">${f.icon}</div>
+          <h4 class="font-display font-bold text-sm text-cyan-300 mb-1">${f.title}</h4>
+          <p class="text-xs text-slate-300 leading-relaxed">${f.desc}</p>
+        </div>
+      `).join('');
+
+      // Bottom Video Gallery
+      document.getElementById('el-bottomGalleryHeading').textContent = cfg.bottomGalleryHeading;
+      document.getElementById('el-bottomVideosContainer').innerHTML = cfg.bottomVideos.map(v => {
+        const vidId = parseYouTubeId(v.youtubeId);
+        return `
+          <div class="video-frame-glow">
+            <div class="rounded-[1rem] bg-slate-950 overflow-hidden">
+              <div class="px-3 py-1.5 bg-slate-900 text-center border-b border-white/10">
+                <span class="text-[11px] font-extrabold tracking-wider text-amber-300">${v.badge}</span>
+              </div>
+              <div class="aspect-video w-full bg-black">
+                <iframe
+                  class="w-full h-full"
+                  src="https://www.youtube.com/embed/${vidId}?rel=0"
+                  title="${v.badge}"
+                  loading="lazy"
+                  frameborder="0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowfullscreen
+                ></iframe>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      // Closing & Sticky Prices
+      document.getElementById('el-closingEyebrow').textContent = cfg.closingEyebrow;
+      document.getElementById('el-closingTitleLine1').textContent = cfg.closingTitleLine1;
+      document.getElementById('el-closingTitleLine2').textContent = cfg.closingTitleLine2;
+      document.getElementById('el-closingDesc').textContent = cfg.closingDesc;
+      document.getElementById('el-closingCtaText').textContent = cfg.closingCtaText;
+
+      document.getElementById('el-originalPrice').textContent = formatRupiah(cfg.originalPrice);
+      document.getElementById('el-discountPrice').textContent = formatRupiah(cfg.discountPrice);
+      document.getElementById('el-stickyBuyText').textContent = cfg.stickyBuyText;
+      document.getElementById('el-stickyPriceTag').textContent = formatRupiah(cfg.discountPrice);
+
+      // Modal Checkout Info
+      document.getElementById('modalProductTitle').textContent = `${cfg.titleLine1} ${cfg.titleLine2}`;
+      document.getElementById('modalOriginalPrice').textContent = formatRupiah(cfg.originalPrice);
+      document.getElementById('modalDiscountPrice').textContent = formatRupiah(cfg.discountPrice);
+    }
+
+    // Toast notification helper
+    let toastTimer;
+    function showToast(msg) {
+      const box = document.getElementById('toastBox');
+      document.getElementById('toastMessage').textContent = msg;
+      box.classList.remove('opacity-0');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        box.classList.add('opacity-0');
+      }, 2400);
+    }
+
+    // Add to Cart feedback
+    function addToCartFeedback() {
+      const badge = document.getElementById('cartBadge');
+      badge.classList.remove('hidden');
+      showToast('✓ Produk ditambahkan ke keranjang! Klik BUY NOW untuk lanjut.');
+    }
+
+    // Checkout Modal Controls
+    function openCheckoutModal() {
+      const modal = document.getElementById('checkoutModal');
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+    }
+
+    function closeCheckoutModal() {
+      const modal = document.getElementById('checkoutModal');
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+    }
+
+    // Submit Checkout -> Redirect to Lynk.id / Payment URL
+    function handleOrderSubmit(e) {
+      e.preventDefault();
+      const name = document.getElementById('buyerName').value.trim();
+      const wa = document.getElementById('buyerWhatsapp').value.trim();
+      const email = document.getElementById('buyerEmail').value.trim();
+
+      if (!name || !wa || !email) {
+        showToast('Mohon lengkapi Nama, WhatsApp, dan Email.');
+        return;
+      }
+
+      showToast('Mengarahkan ke halaman pembayaran...');
+      setTimeout(() => {
+        window.open(PRODUCT_CONFIG.checkoutUrl, '_blank', 'noopener,noreferrer');
+      }, 600);
+    }
+
+    // Order via WhatsApp
+    function orderViaWhatsApp() {
+      const name = document.getElementById('buyerName').value.trim() || 'Calon Pembeli';
+      const productName = `${PRODUCT_CONFIG.titleLine1} ${PRODUCT_CONFIG.titleLine2}`;
+      const priceText = formatRupiah(PRODUCT_CONFIG.discountPrice);
+      const text = encodeURIComponent(
+        `Halo Admin, saya *${name}* ingin memesan produk:\n\n` +
+        `📦 *${productName}*\n` +
+        `💰 Harga Promo: *${priceText}*\n\n` +
+        `Mohon info langkah aksesnya. Terima kasih!`
+      );
+      window.open(`https://wa.me/${PRODUCT_CONFIG.whatsappNumber}?text=${text}`, '_blank', 'noopener,noreferrer');
+    }
+
+    // Quick-Editor Controls
+    function openQuickEditor() {
+      document.getElementById('ed-title1').value = PRODUCT_CONFIG.titleLine1;
+      document.getElementById('ed-title2').value = PRODUCT_CONFIG.titleLine2;
+      document.getElementById('ed-subtitle').value = PRODUCT_CONFIG.subtitle;
+      document.getElementById('ed-origPrice').value = PRODUCT_CONFIG.originalPrice;
+      document.getElementById('ed-discPrice').value = PRODUCT_CONFIG.discountPrice;
+      document.getElementById('ed-checkoutUrl').value = PRODUCT_CONFIG.checkoutUrl;
+      document.getElementById('ed-wa').value = PRODUCT_CONFIG.whatsappNumber;
+      document.getElementById('ed-yt1').value = PRODUCT_CONFIG.topVideos[0]?.youtubeId || '';
+      document.getElementById('ed-yt2').value = PRODUCT_CONFIG.topVideos[1]?.youtubeId || '';
+
+      const modal = document.getElementById('quickEditorModal');
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+    }
+
+    function closeQuickEditor() {
+      const modal = document.getElementById('quickEditorModal');
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+    }
+
+    function applyQuickEditor() {
+      PRODUCT_CONFIG.titleLine1 = document.getElementById('ed-title1').value.trim() || PRODUCT_CONFIG.titleLine1;
+      PRODUCT_CONFIG.titleLine2 = document.getElementById('ed-title2').value.trim() || PRODUCT_CONFIG.titleLine2;
+      PRODUCT_CONFIG.subtitle = document.getElementById('ed-subtitle').value.trim() || PRODUCT_CONFIG.subtitle;
+      PRODUCT_CONFIG.originalPrice = Number(document.getElementById('ed-origPrice').value) || PRODUCT_CONFIG.originalPrice;
+      PRODUCT_CONFIG.discountPrice = Number(document.getElementById('ed-discPrice').value) || PRODUCT_CONFIG.discountPrice;
+      PRODUCT_CONFIG.checkoutUrl = document.getElementById('ed-checkoutUrl').value.trim() || PRODUCT_CONFIG.checkoutUrl;
+      PRODUCT_CONFIG.whatsappNumber = document.getElementById('ed-wa').value.trim() || PRODUCT_CONFIG.whatsappNumber;
+
+      const yt1 = document.getElementById('ed-yt1').value.trim();
+      const yt2 = document.getElementById('ed-yt2').value.trim();
+      if (yt1 && PRODUCT_CONFIG.topVideos[0]) PRODUCT_CONFIG.topVideos[0].youtubeId = yt1;
+      if (yt2 && PRODUCT_CONFIG.topVideos[1]) PRODUCT_CONFIG.topVideos[1].youtubeId = yt2;
+
+      renderLandingPage();
+      closeQuickEditor();
+      showToast('✓ Tampilan landing page berhasil diperbarui!');
+    }
+
+    // Salin HTML final dengan PRODUCT_CONFIG terbaru
+    function copyFinalHtml() {
+      applyQuickEditor();
+      const updatedConfigJson = JSON.stringify(PRODUCT_CONFIG, null, 4);
+      let fullHtml = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+
+      // Replace objek PRODUCT_CONFIG dengan versi yang sudah diedit
+      fullHtml = fullHtml.replace(
+        /const PRODUCT_CONFIG = \{[\s\S]*?\};/,
+        `const PRODUCT_CONFIG = ${updatedConfigJson};`
+      );
+
+      const tempArea = document.createElement('textarea');
+      tempArea.value = fullHtml;
+      document.body.appendChild(tempArea);
+      tempArea.select();
+      try {
+        document.execCommand('copy');
+        showToast('📋 Kode HTML lengkap berhasil disalin ke clipboard!');
+      } catch (err) {
+        showToast('Gagal menyalin otomatis. Gunakan tombol Download/Copy.');
+      }
+      document.body.removeChild(tempArea);
+    }
+
+    // Inisialisasi halaman saat selesai dimuat
+    window.addEventListener('DOMContentLoaded', renderLandingPage);
+  </script>
+</body>
+</html>
+```
